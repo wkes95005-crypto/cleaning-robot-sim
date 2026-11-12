@@ -1,0 +1,44 @@
+# 模型與後端都在這裡切換，程式碼不用改。
+
+[sim]
+seed = 7
+ticks_per_second = 6     # 儀表板播放速度（每 tick = 模擬 0.5 秒）
+latency_ticks = 1        # 機器人 ↔ 中控台的通訊延遲
+scenario = "default"     # default：預設賣場情境；empty：空場地
+
+[planner]                # 中控台上的任務規劃器（LLM）
+backend = "rule"         # rule：關鍵字規則（不需模型）；ollama：本地 LLM
+model = "gemma3:4b"      # backend = "ollama" 時使用，例如 gemma3:4b、gemma3:12b、llama3.1:8b、phi4-mini
+url = "http://localhost:11434"
+timeout = 60
+
+[asr]                    # 每台機器人機上的語音轉文字
+backend = "text"         # text：儀表板輸入的句子當成收音結果；whisper：faster-whisper
+model = "small"
+
+[detector]               # 每台機器人鏡頭上的髒污偵測
+backend = "sim"          # sim：模擬偵測（遠距會誤判）；yolo：載入權重（需要實際影像）
+weights = "weights/dirt_yolov8n.pt"
+near_accuracy = 0.98
+far_accuracy = 0.85
+
+# 機隊：順序 = 路權高低，依序停在充電站 1~5 號位
+[[robots]]
+id = "A1"
+role = "arm"             # 障礙排除機（機械手臂）
+battery = 90
+
+[[robots]]
+id = "M1"
+role = "mopper"
+battery = 85
+
+[[robots]]
+id = "S1"
+role = "sweeper"
+battery = 95
+
+[[robots]]
+id = "S2"
+role = "sweeper"
+battery = 32             # 故意偏低，展示中途回充與任務交接

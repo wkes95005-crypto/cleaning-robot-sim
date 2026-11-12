@@ -1,0 +1,103 @@
+#VRML_SIM R2025b utf8
+# Round differential-drive floor robot (about 34 cm across), used for the sweepers, the mopper and,
+# with a different colour, the obstacle-removal robot. GPS + compass for pose, a front camera for the
+# dirt detector and a 2D lidar for obstacle avoidance.
+
+PROTO CleaningRobot [
+  field SFVec3f    translation    0 0 0
+  field SFRotation rotation       0 0 1 0
+  field SFString   name           "robot"
+  field SFString   controller     "cleaner"
+  field MFString   controllerArgs []
+  field SFBool     supervisor     TRUE
+  field SFColor    color          0.24 0.81 0.56
+  field SFInt32    cameraWidth    320
+  field SFInt32    cameraHeight   240
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    controller IS controller
+    controllerArgs IS controllerArgs
+    supervisor IS supervisor
+    contactMaterial "caster"
+    children [
+      Pose {
+        translation 0 0 0.065
+        children [
+          Shape {
+            appearance PBRAppearance { baseColor IS color roughness 0.4 metalness 0 }
+            geometry Cylinder { height 0.08 radius 0.17 }
+          }
+        ]
+      }
+      Pose {
+        translation 0.11 0 0.107
+        children [
+          Shape {
+            appearance PBRAppearance { baseColor 0.08 0.08 0.1 roughness 0.6 metalness 0 }
+            geometry Box { size 0.05 0.16 0.006 }
+          }
+        ]
+      }
+      HingeJoint {
+        jointParameters HingeJointParameters { axis 0 1 0 anchor 0 0.13 0.035 }
+        device [ RotationalMotor { name "left wheel motor" maxVelocity 20 } ]
+        endPoint Solid {
+          translation 0 0.13 0.035
+          rotation 1 0 0 1.5708
+          children [
+            DEF WHEEL Shape {
+              appearance PBRAppearance { baseColor 0.1 0.1 0.1 roughness 1 metalness 0 }
+              geometry Cylinder { height 0.02 radius 0.035 }
+            }
+          ]
+          name "left wheel"
+          boundingObject USE WHEEL
+          physics Physics { density -1 mass 0.05 }
+        }
+      }
+      HingeJoint {
+        jointParameters HingeJointParameters { axis 0 1 0 anchor 0 -0.13 0.035 }
+        device [ RotationalMotor { name "right wheel motor" maxVelocity 20 } ]
+        endPoint Solid {
+          translation 0 -0.13 0.035
+          rotation 1 0 0 1.5708
+          children [ USE WHEEL ]
+          name "right wheel"
+          boundingObject USE WHEEL
+          physics Physics { density -1 mass 0.05 }
+        }
+      }
+      GPS { }
+      Compass { }
+      Camera {
+        translation 0.165 0 0.12
+        rotation 0 1 0 0.22
+        name "camera"
+        fieldOfView 1.2
+        width IS cameraWidth
+        height IS cameraHeight
+        recognition Recognition { maxRange 6 occlusion 1 segmentation TRUE }  # pixel-exact labels for YOLO data
+      }
+      Lidar {
+        translation 0 0 0.13
+        horizontalResolution 180
+        fieldOfView 6.28
+        numberOfLayers 1
+        minRange 0.18
+        maxRange 4
+      }
+    ]
+    boundingObject Group {
+      children [
+        Pose { translation 0 0 0.065 children [ Cylinder { height 0.08 radius 0.17 } ] }
+        Pose { translation 0.12 0 0.015 children [ Sphere { radius 0.015 } ] }
+        Pose { translation -0.12 0 0.015 children [ Sphere { radius 0.015 } ] }
+      ]
+    }
+    physics Physics { density -1 mass 2.5 }
+  }
+}

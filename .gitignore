@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv-yolo/
+
+# YOLO: dataset and training runs are regenerated (see README); the trained weights are kept
+webots/dataset/
+webots/runs/
+runs/
+yolov8n.pt
+
+# Webots camera frames and local tool settings
+webots/.frames/
+.claude/
+.DS_Store
+
+# Webots window layout
+*.wbproj

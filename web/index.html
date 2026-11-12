@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>賣場清潔機器人調度模擬</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>賣場清潔機器人調度模擬</h1>
+    <span id="clock">t = 0 s</span>
+    <span id="backends"></span>
+  </div>
+  <div class="controls">
+    <button id="btn-pause">暫停</button>
+    <button id="btn-step" title="暫停時前進一步">單步</button>
+    <label>速度 <input id="speed" type="range" min="1" max="30" value="6"><span id="speed-val">6</span> tick/s</label>
+    <button id="btn-reset">重置情境</button>
+  </div>
+</header>
+
+<main>
+  <section class="map-col">
+    <div class="map-wrap"><canvas id="map"></canvas></div>
+    <div class="toolbar">
+      <span class="label">點地圖放置：</span>
+      <label><input type="radio" name="tool" value="none" checked>不放置</label>
+      <label><input type="radio" name="tool" value="dirt:dry"><i class="sw dry"></i>乾垃圾</label>
+      <label><input type="radio" name="tool" value="dirt:wet"><i class="sw wet"></i>液體</label>
+      <label><input type="radio" name="tool" value="dirt:mixed"><i class="sw mixed"></i>混合髒污</label>
+      <label><input type="radio" name="tool" value="obstacle:box"><i class="sw box"></i>紙箱</label>
+      <label><input type="radio" name="tool" value="obstacle:cart"><i class="sw cart"></i>推車</label>
+      <label><input type="radio" name="tool" value="obstacle:cable"><i class="sw cable"></i>電線（不可移動）</label>
+      <label class="toggle"><input type="checkbox" id="show-truth" checked>顯示尚未被發現的物件</label>
+    </div>
+    <div class="legend">
+      <span><i class="dot sweeper"></i>掃地機 S1/S2</span>
+      <span><i class="dot mopper"></i>拖地機 M1</span>
+      <span><i class="dot arm"></i>障礙排除機 A1</span>
+      <span><i class="sq nogo"></i>禁區（已知障礙）</span>
+      <span><i class="sq buffer"></i>避讓範圍</span>
+      <span><i class="sq faint"></i>半透明＝真實存在但中控台還不知道</span>
+    </div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="side-col">
+    <div class="panel" id="cam-panel" hidden>
+      <h2>鏡頭畫面 <small id="cam-info"></small></h2>
+      <div class="cam-main"><img id="cam-main" alt=""><canvas id="cam-boxes"></canvas><span class="cam-label" id="cam-label"></span><span class="cam-yolo" id="cam-yolo"></span></div>
+      <div class="cam-thumbs" id="cam-thumbs"></div>
+      <label class="cam-opt"><input type="checkbox" id="cam-thumbs-on" checked> 同時顯示其他機器人縮圖（每秒 1 張）</label>
+    </div>
+    <div class="panel">
+      <h2>對機器人說話 <small>（按鈕或數字鍵 1–4 切換；也可以直接點地圖上的機器人）</small></h2>
+      <div class="talk-tabs" id="talk-tabs"></div>
+      <div class="chat" id="chat"></div>
+      <div class="cmd-row">
+        <button id="mic" title="用瀏覽器的語音辨識代替機器人麥克風">🎤</button>
+        <input id="cmd-text" autocomplete="off">
+        <button id="cmd-send" class="primary">送出</button>
+      </div>
+      <div class="presets" id="presets"></div>
+    </div>
+    <div class="panel">
+      <h2>機器人狀態</h2>
+      <div id="robots"></div>
+    </div>
+    <div class="panel grow">
+      <h2>任務黑板 <small id="task-count"></small></h2>
+      <div id="tasks"></div>
+    </div>
+  </section>
+</main>
+
+<section class="panel log-panel">
+  <div class="log-head">
+    <h2>中控台日誌</h2>
+    <div id="log-filter"></div>
+  </div>
+  <div id="log"></div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>
