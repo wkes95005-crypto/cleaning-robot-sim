@@ -19,13 +19,20 @@ const PRESETS = {
 };
 
 const canvas = document.getElementById("map");
-const ctx = canvas.getContext("2d");
+let ctx = canvas.getContext("2d");
 let MAP = null;
 let STATE = null;
 let logFilter = new Set(Object.keys(LOG_CATS).filter((c) => c !== "clean"));
 let lastLogKey = "";
 let selected = null;   // robot currently being talked to
 let lastChatKey = "";
+// Smooth motion: the simulation moves robots one cell per tick. The dashboard keeps each robot's recent
+// positions by tick number and draws them a little in the past, interpolated linearly between ticks,
+// so robots glide at a constant speed instead of jumping a cell per tick.
+const DISP = {};       // robot id -> {x, y} where it is drawn this frame
+const HIST = {};       // robot id -> [{tick, x, y}] recent positions from the server
+const CLOCK = { tps: 0, rate: 6, win: null, tick: 0, anchor: null, rt: null, lastMs: null };
+let mapLayer = null;   // static map drawn once into an offscreen canvas
 
 async function api(path, body) {
   const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
@@ -87,6 +94,7 @@ async function init() {
   };
   canvas.addEventListener("click", onMapClick);
   poll();
+  requestAnimationFrame(frame);
 }
 
 async function sendCommand() {
@@ -247,14 +255,80 @@ async function onMapClick(e) {
   await api("/api/spawn", { kind, type, x, y });
 }
 
+function trackRobots() {
+  const now = performance.now() / 1000, tick = STATE.tick, setTps = STATE.tps || 6;
+  const c = CLOCK;
+  const fresh = c.tps !== setTps || !c.anchor || tick < c.tick || STATE.paused;
+  if (tick < c.tick) for (const k in HIST) delete HIST[k]; // reset
+  if (c.tps !== setTps) { c.rate = setTps; c.measured = false; }
+  // the real tick rate can be lower than the setting (server step time, Webots below real time): measure it
+  if (fresh || !c.win || now - c.win.t > 5) {
+    c.win = { t: now, tick };
+  } else if (now - c.win.t >= (c.measured ? 1.5 : 0.6)) {
+    const r = Math.min((tick - c.win.tick) / (now - c.win.t), setTps * 1.1);
+    if (r > 0.2 * setTps) { c.rate = c.measured ? c.rate + 0.5 * (r - c.rate) : r; c.measured = true; }
+    c.win = { t: now, tick };
+  }
+  // the clock predicts the current (fractional) tick; each poll corrects it a little, so jitter averages out
+  const predicted = c.anchor ? c.anchor.tick + (now - c.anchor.t) * c.rate : tick;
+  if (fresh || Math.abs(tick - predicted) > 3 + 0.5 * c.rate) c.anchor = { t: now, tick };
+  else c.anchor = { t: now, tick: predicted + 0.05 * (tick - predicted) };
+  c.tps = setTps; c.tick = tick;
+  for (const r of STATE.robots) {
+    const h = HIST[r.id] || (HIST[r.id] = []);
+    const last = h[h.length - 1];
+    if (last && last.tick === tick) continue;
+    if (last && last.x === r.x && last.y === r.y && h.length > 1 && h[h.length - 2].x === r.x && h[h.length - 2].y === r.y) {
+      last.tick = tick; // still standing: extend the last sample instead of piling up copies
+    } else {
+      h.push({ tick, x: r.x, y: r.y });
+    }
+    if (h.length > 80) h.splice(0, h.length - 80);
+  }
+}
+
+function placeRobots(nowMs) {
+  const c = CLOCK;
+  if (!c.anchor) return;
+  const delay = 1 / c.rate + 0.15; // play back slightly in the past so the next sample is already known
+  const target = c.anchor.tick + (nowMs / 1000 - c.anchor.t - delay) * c.rate; // fractional tick to show
+  const dt = (nowMs - (c.lastMs ?? nowMs)) / 1000;
+  // follow the target at 0.7x-1.3x of real speed, so clock corrections never show up as jumps
+  let rt = c.rt ?? target;
+  if (Math.abs(target - rt) > 3 + c.rate * 0.5) rt = target; // far off (resume, speed change): jump
+  else rt = Math.min(rt + dt * c.rate * 1.3, Math.max(rt + dt * c.rate * 0.7, target));
+  c.rt = rt; c.lastMs = nowMs;
+  for (const [id, h] of Object.entries(HIST)) {
+    let i = h.length - 1;
+    while (i > 0 && h[i].tick > rt) i--;
+    const a = h[i], b = h[i + 1];
+    if (!b || rt <= a.tick) { DISP[id] = { x: a.x, y: a.y }; continue; }
+    const steps = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (steps > b.tick - a.tick + 1) { DISP[id] = { x: a.x, y: a.y }; continue; } // teleport: no glide
+    const f = steps * Math.min(1, (rt - a.tick) / (b.tick - a.tick)); // cells travelled from a, along x then y
+    const dx = Math.abs(b.x - a.x), sx = Math.sign(b.x - a.x), sy = Math.sign(b.y - a.y);
+    DISP[id] = f <= dx ? { x: a.x + sx * f, y: a.y } : { x: b.x, y: a.y + sy * (f - dx) };
+  }
+}
+
+function frame(t) {
+  if (STATE && MAP) {
+    placeRobots(t);
+    drawMap();
+    drawState();
+  }
+  requestAnimationFrame(frame);
+}
+
 async function poll() {
   try {
     STATE = await api("/api/state");
+    trackRobots();
     render();
   } catch (err) {
     console.error(err);
   }
-  setTimeout(poll, 150);
+  setTimeout(poll, 80);
 }
 
 // ------------------------------------------------------------------ map
@@ -263,6 +337,19 @@ function cellRect(x, y, pad = 0) {
 }
 
 function drawMap() {
+  if (mapLayer && mapLayer.width === canvas.width && mapLayer.height === canvas.height) {
+    ctx.drawImage(mapLayer, 0, 0);
+    return;
+  }
+  const real = ctx;
+  mapLayer = document.createElement("canvas");
+  mapLayer.width = canvas.width; mapLayer.height = canvas.height;
+  ctx = mapLayer.getContext("2d");
+  try { paintMap(); } finally { ctx = real; }
+  ctx.drawImage(mapLayer, 0, 0);
+}
+
+function paintMap() {
   ctx.fillStyle = "#1a212c";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -353,10 +440,12 @@ function drawState() {
     ctx.globalAlpha = 1;
   }
 
+  const at = (r) => DISP[r.id] || r; // where the robot is drawn right now
   for (const r of s.robots) {
     if (r.path.length) {
       ctx.strokeStyle = ROLE_COLOR[r.role]; ctx.globalAlpha = 0.45; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-      ctx.beginPath(); ctx.moveTo(r.x * CS + CS / 2, r.y * CS + CS / 2);
+      ctx.beginPath(); ctx.moveTo(at(r).x * CS + CS / 2, at(r).y * CS + CS / 2);
+      ctx.lineTo(r.x * CS + CS / 2, r.y * CS + CS / 2);
       for (const [x, y] of r.path) ctx.lineTo(x * CS + CS / 2, y * CS + CS / 2);
       ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
       const [nx, ny] = r.path[0]; // reserved next cell
@@ -364,13 +453,14 @@ function drawState() {
     }
   }
   for (const r of s.robots) {
-    const cx = r.x * CS + CS / 2, cy = r.y * CS + CS / 2;
+    const { x: rx, y: ry } = at(r);
+    const cx = rx * CS + CS / 2, cy = ry * CS + CS / 2;
     if (r.id === selected) { // the robot being talked to
       ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.fillStyle = "rgba(255,255,255,0.04)";
-    ctx.fillRect((r.x - 3) * CS, (r.y - 3) * CS, 7 * CS, 7 * CS); // camera field of view
+    ctx.fillRect((rx - 3) * CS, (ry - 3) * CS, 7 * CS, 7 * CS); // camera field of view
     ctx.fillStyle = ROLE_COLOR[r.role];
     ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = r.battery < 25 ? "#ff5d5d" : "#0b0f14";
@@ -456,8 +546,6 @@ function escapeHtml(s) {
 }
 
 function render() {
-  drawMap();
-  drawState();
   const s = STATE;
   document.getElementById("clock").textContent =
     `t = ${s.time_s.toFixed(1)} s（tick ${s.tick}）${s.paused ? "・已暫停" : ""}${s.held.length === s.robots.length ? "・全體待命" : ""}${s.thinking ? "・LLM 規劃中…" : ""}`;
