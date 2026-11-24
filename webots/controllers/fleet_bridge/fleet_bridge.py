@@ -45,9 +45,9 @@ class Bridge:
         self.frames_dir = os.environ.get("CLEANSIM_FRAMES", FRAMES_DIR)  # robots' camera_feed writes here
         os.makedirs(self.frames_dir, exist_ok=True)
 
-    def reset(self):
+    def reset(self, remap=False):
         with self.lock:
-            self.sim = Simulation(self.cfg)
+            self.sim = Simulation(self.cfg, remap=remap)
 
 
 cfg = load_config(os.path.join(ROOT, "config.toml"))

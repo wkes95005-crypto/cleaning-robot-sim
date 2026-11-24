@@ -12,13 +12,15 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from .mapping import OccupancyMap, bfs_distances
 from .pathfinding import chebyshev, neighbors8
 from .robots import ROLE_LABEL
-from .world import DIRT_KINDS, OBSTACLE_KINDS, PATROL_ZONES, ZONES, coverage_waypoints
+from .world import CELL_M, DIRT_KINDS, OBSTACLE_KINDS, PATROL_ZONES, ZONES, coverage_waypoints, rect_cells, resolve_zone
 
 LOW_BATTERY = 20     # send home to charge below this
 READY_BATTERY = 30   # don't hand out new work below this
 LOW_WATER = 10
+EXPLORE_LIMIT = 2400  # ticks (20 minutes): stop exploring even if some frontier is never reached
 MODE_LABEL = {"sweep": "掃地", "mop": "拖地", "sweep_then_mop": "先掃後拖"}
 
 
@@ -97,6 +99,20 @@ class Console:
         self._plans = []            # (future, robot id, zone) while the LLM is thinking
         self.drop_reserved = set()
         self.stats = {"cleaned": 0, "obstacles_cleared": 0, "commands": 0}
+        # shared map: by default the finished survey (walls known, every zone labelled);
+        # Simulation calls start_mapping() / load_map() when [mapping] is on
+        self.map = OccupancyMap.from_world(sim.world)
+        self.zones = {name: rect for name, (rect, _) in ZONES.items()}  # labelled zones: name -> rect
+        self.pending_zones = []     # zones an operator still has to draw on the finished map
+        self.phase = "given"        # given | exploring | done
+        self.map_file = None
+        self._zone_map = None
+        self._explore_start = 0
+        self._no_frontier = 0
+        self._milestone = 0
+        self.frontier_cells = []
+        self.manual_zones = []
+        self._explore_logged = {}
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -115,7 +131,21 @@ class Console:
         return t
 
     def _where(self, cell):
-        return f"{self.sim.world.zone_of(cell)}{tuple(cell)}"
+        return f"{self.zone_of(cell)}{tuple(cell)}"
+
+    # ------------------------------------------------------------------ zones on the shared map
+    def zone_of(self, c):
+        if self._zone_map is None:
+            self._zone_map = {}
+            for name in [n for n in ZONES if n in self.zones] + [n for n in self.zones if n not in ZONES]:
+                for cell in rect_cells(*self.zones[name]):
+                    self._zone_map.setdefault(cell, name)
+        return self._zone_map.get(tuple(c), "通道")
+
+    def zone_cells(self, name):
+        if name not in self.zones:
+            return []
+        return [c for c in rect_cells(*self.zones[name]) if self.zone_of(c) == name and self.map.is_free(c)]
 
     def current_task(self, rid):
         return next((t for t in self.tasks.values() if t.status == "assigned" and t.assignee == rid), None)
@@ -132,16 +162,24 @@ class Console:
     def step(self):
         for m in self.sim.bus.receive("console"):
             getattr(self, "_on_" + m.topic)(m.sender, **m.payload)
+        if self.phase == "exploring":
+            self._explore()
         self._collect_plans()
         self._check_energy()
-        if self.tick % 5 == 0:
-            self._reconcile()
-        self._dispatch()
+        if self.phase != "exploring":
+            if self.tick % 5 == 0:
+                self._reconcile()
+            self._dispatch()
         self._park_idle()
 
     # ------------------------------------------------------------------ messages from robots
     def _on_status(self, rid, **st):
         self.status[rid] = st
+        if self.phase != "given":
+            self.map.mark_free([tuple(st["pos"])])  # where a robot stands is floor
+
+    def _on_scan(self, rid, free, hits):
+        self.map.update(map(tuple, free), map(tuple, hits))
 
     def _on_voice_text(self, rid, text, cell, zone):
         self.stats["commands"] += 1
@@ -230,7 +268,7 @@ class Console:
         t.status = "done"
         if t.kind == "clear" and note:
             self.drop_reserved.discard(t.drop)
-        if t.kind != "patrol":
+        if t.kind not in ("patrol", "explore"):
             self._log("dispatch", f"{rid} 完成 {t.id}：{t.title}" + (f"（{note}）" if note else ""))
 
     def _on_skipped(self, rid, task, cell):
@@ -260,7 +298,7 @@ class Console:
         buf = set()
         for o in self.known_obstacles.values():
             if o["kind"] in self.avoid_kinds and not o["stored"]:
-                buf |= {n for n in neighbors8(tuple(o["cell"])) if world.is_floor(n)}
+                buf |= {n for n in neighbors8(tuple(o["cell"])) if self.map.is_free(n)}
         self.no_go_buffer = buf - self.no_go_core
 
     # ------------------------------------------------------------------ planning
@@ -317,7 +355,7 @@ class Console:
                 replies.append("我繼續工作" if pin else "全體恢復工作")
             else:
                 zone = s.get("zone") or heard_zone
-                if a == "clean_zone" and zone not in ZONES and not s.get("zone") and heard_cell:
+                if a == "clean_zone" and zone not in self.zones and not s.get("zone") and heard_cell:
                     # "這邊" said in an aisle that belongs to no zone: clean the area around the robot
                     area = self._area_around(heard_cell)
                     if area:
@@ -328,7 +366,12 @@ class Console:
                         if ids and not plan.get("parallel"):
                             prev = ids
                         continue
-                if zone not in ZONES:
+                if zone in ZONES and zone not in self.zones:
+                    self._log("llm", f"地圖上還沒有標註{zone}，略過這一步")
+                    replies.append(f"但地圖上還沒有{zone}" + ("，要等建圖完成" if self.phase == "exploring"
+                                                             else "，請先在地圖上標註"))
+                    continue
+                if zone not in self.zones:
                     self._log("llm", f"指令沒有可用的區域（{zone}），略過這一步")
                     replies.append("但我不確定是哪個區域")
                     continue
@@ -343,6 +386,8 @@ class Console:
                 replies.append(text)
                 if ids and not plan.get("parallel"):
                     prev = ids
+        if self.phase == "exploring" and any(s["action"] in ("clean_zone", "clear_obstacles") for s in plan["steps"]):
+            replies.append("地圖建好後就開始")
         self._say(rid, "收到，" + "；".join(replies) + "。")
 
     def _say(self, rid, text):
@@ -370,12 +415,12 @@ class Console:
         """Floor cells within `radius` (Chebyshev) of a cell, for "clean here" outside any zone."""
         world, (x0, y0) = self.sim.world, cell
         return [(x, y) for x in range(x0 - radius, x0 + radius + 1) for y in range(y0 - radius, y0 + radius + 1)
-                if world.is_floor((x, y)) and (x, y) not in self.no_go_core]
+                if self.map.is_free((x, y)) and (x, y) not in self.no_go_core]
 
     def _zone_clean(self, zone, mode, deps, pin=None, area=None):
         """Clean a whole zone, or with `area` just those cells (then `zone` is only the label)."""
         world = self.sim.world
-        cells = area or [c for c in world.zone_cells(zone) if c not in self.no_go_core]
+        cells = area or [c for c in self.zone_cells(zone) if c not in self.no_go_core]
         scope = {"zone": None, "cells": set(area)} if area else {"zone": zone}
         role = self.sim.robot(pin).role if pin else None
         n_sweepers = sum(r.role == "sweeper" for r in self.sim.robots)
@@ -433,7 +478,7 @@ class Console:
         mine = pin if pin and self.sim.robot(pin).role == "arm" else None
         ids, fixed = [], set()
         for oid, o in self.known_obstacles.items():
-            if o["stored"] or world.zone_of(o["cell"]) != zone:
+            if o["stored"] or self.zone_of(o["cell"]) != zone:
                 continue
             if not o["movable"]:
                 fixed.add(OBSTACLE_KINDS[o["kind"]])
@@ -450,7 +495,7 @@ class Console:
         if fixed:
             return [], f"{zone}只有{'、'.join(sorted(fixed))}，不能移動，大家會繞開"
         t = self._new_task(kind="patrol", role="arm", priority=1, zone=zone, source="voice", pinned=mine,
-                           waypoints=coverage_waypoints([c for c in world.zone_cells(zone)
+                           waypoints=coverage_waypoints([c for c in self.zone_cells(zone)
                                                          if c not in self.no_go_core], 4),
                            depends_on=list(deps), title=f"搜尋障礙物：{zone}")
         self._log("dispatch", f"{zone} 目前沒有已知障礙物，建立 {t.id} 讓障礙排除機先去巡查")
@@ -480,7 +525,7 @@ class Console:
     # ------------------------------------------------------------------ task board
     def _reconcile(self):
         """Every known dirt cell must be covered by an open task of the right robot type."""
-        zone_of = self.sim.world.zone_of
+        zone_of = self.zone_of
         open_tasks = [t for t in self.tasks.values()
                       if t.status in ("pending", "assigned") and t.kind in ("sweep", "mop")]
         loose = {"sweeper": [], "mopper": []}
@@ -564,15 +609,18 @@ class Console:
         if any(t.status == "pending" and t.role == "sweeper" for t in self.tasks.values()):
             return
         busy_zones = {t.zone for t in self.tasks.values() if t.status == "assigned" and t.kind == "patrol"}
+        patrol = [z for z in PATROL_ZONES if z in self.zones]
+        if not patrol:
+            return
         for r in self.sim.robots:
             if r.role != "sweeper" or r.id in taken or not self._ready(r.id) or self.current_task(r.id):
                 continue
-            for _ in range(len(PATROL_ZONES)):
-                zone = PATROL_ZONES[self._patrol_next % len(PATROL_ZONES)]
+            for _ in range(len(patrol)):
+                zone = patrol[self._patrol_next % len(patrol)]
                 self._patrol_next += 1
                 if zone not in busy_zones:
                     break
-            cells = [c for c in self.sim.world.zone_cells(zone) if c not in self.no_go_core]
+            cells = [c for c in self.zone_cells(zone) if c not in self.no_go_core]
             t = self._new_task(kind="patrol", role="sweeper", priority=0, zone=zone,
                                waypoints=coverage_waypoints(cells), title=f"巡邏清掃：{zone}")
             busy_zones.add(zone)
@@ -605,3 +653,169 @@ class Console:
                     and r.id not in self.held \
                     and self._once(r.id, "park", every=10):
                 self._send(r.id, "park")
+
+    # ------------------------------------------------------------------ mapping (survey before work)
+    def start_mapping(self, map_file, manual_zones):
+        """Begin with an empty map: robots explore until no frontier is left, then the map is saved."""
+        self.map = OccupancyMap()
+        self.zones, self._zone_map = {}, None
+        self.phase, self.map_file = "exploring", map_file
+        self.manual_zones = [z for z in manual_zones if z in ZONES]
+        self._explore_start = self.tick
+        for r in self.sim.robots:
+            self.map.mark_free([r.dock])
+        self._log("map", f"開始建圖：{len(self.sim.robots)} 台機器人以光達掃描，地圖從全黑開始；"
+                         "建圖期間鏡頭看到的髒污只記錄，建完再清")
+
+    def load_map(self, map_file, manual_zones):
+        with open(map_file, encoding="utf-8") as f:
+            text = f.read()
+        self.map, zones, data = OccupancyMap.from_json(text)
+        self.zones, self._zone_map = zones, None
+        self.phase, self.map_file = "done", map_file
+        self.pending_zones = [z for z in manual_zones if z in ZONES and z not in zones]
+        self._log("map", f"載入已建好的地圖（{data.get('built', '')}，{data.get('free_m2', '?')} m²）"
+                         + (f"；尚待標註：{'、'.join(self.pending_zones)}" if self.pending_zones else ""))
+
+    def _explore(self):
+        if self.tick % 2:
+            return
+        groups = self.map.frontiers()
+        self.frontier_cells = [c for g in groups for c in g]
+        self._report_progress()
+        targets = []  # (target cell, cluster size)
+        for g in groups:
+            cx, cy = sum(c[0] for c in g) / len(g), sum(c[1] for c in g) / len(g)
+            targets.append((min(g, key=lambda c: (c[0] - cx) ** 2 + (c[1] - cy) ** 2), len(g), set(g)))
+        busy = {}
+        for r in self.sim.robots:
+            t = self.current_task(r.id)
+            if t and t.kind == "explore":
+                if t.waypoints and any(t.waypoints[0] in g for _, _, g in targets):
+                    busy[r.id] = t.waypoints[0]
+                else:  # its frontier got mapped by someone else (or it arrived): pick a new one
+                    t.status = "done"
+                    self._send(r.id, "cancel", task=t.id)
+        # Greedy global assignment: repeatedly take the cheapest (robot, frontier) pair; each frontier
+        # cluster gets one robot and frontiers near someone else's target cost more, so robots spread out.
+        free_robots = {}
+        for r in self.sim.robots:
+            cur = self.current_task(r.id)
+            if r.id in busy or not self._ready(r.id) or (cur and cur.kind != "explore"):
+                continue
+            pos = tuple(self.status[r.id]["pos"])
+            free_robots[r.id] = bfs_distances(pos, lambda c: self.map.is_free(c) and c not in self.no_go_core)
+        reachable_any = any(cell in d for d in free_robots.values() for cell, _, _ in targets)
+        while free_robots:
+            best = None
+            for rid, dist in free_robots.items():
+                for cell, size, group in targets:
+                    if cell not in dist:
+                        continue
+                    if any(o in group for o in busy.values()):
+                        continue  # one robot per frontier; spare robots go back to their docks
+                    near = sum(1 for o in busy.values() if chebyshev(o, cell) <= 8)
+                    score = dist[cell] - 2 * min(size, 12) + 25 * near
+                    if best is None or score < best[0]:
+                        best = (score, rid, cell, size)
+            if not best:
+                break
+            _, rid, cell, size = best
+            dist = free_robots.pop(rid)
+            r = self.sim.robot(rid)
+            t = self._new_task(kind="explore", role=r.role, priority=0, pinned=rid, waypoints=[cell],
+                               title=f"探索未知區域邊界 {cell}")
+            t.status, t.assignee = "assigned", rid
+            self._send(rid, "assign", task=t.payload())
+            busy[rid] = cell
+            last = self._explore_logged.get(rid)
+            if last is None or chebyshev(last, cell) > 8:  # log real changes of direction, not every hop
+                self._explore_logged[rid] = cell
+                self._log("map", f"{rid} 前往未知區域邊界 {self._where_map(cell)}"
+                                 f"（{size} 格交界，路程 {dist[cell] * CELL_M:.1f} m）")
+        if busy or reachable_any:
+            self._no_frontier = 0
+        else:
+            self._no_frontier += 1
+        if self._no_frontier >= 3 or self.tick - self._explore_start > EXPLORE_LIMIT:
+            self._finish_mapping(complete=self._no_frontier >= 3)
+
+    def _where_map(self, cell):
+        """While mapping there are no zone names yet: describe a cell by direction from the docks."""
+        x, y = cell
+        ns = "北側" if y < 11 else "南側" if y > 21 else "中段"
+        ew = "西" if x < 16 else "東" if x > 31 else "中"
+        return f"{ew}{ns} {tuple(cell)}"
+
+    def _report_progress(self):
+        floor = sum(1 for y in range(len(self.map.l)) for x in range(len(self.map.l[0]))
+                    if self.sim.world.is_floor((x, y)))
+        pct = int(100 * len(self.map.free_cells()) / max(1, floor))
+        if pct >= self._milestone + 25:
+            self._milestone = pct // 25 * 25
+            self._log("map", f"已建出 {len(self.map.free_cells()) * CELL_M * CELL_M:.0f} m² 地面"
+                             f"（約 {self._milestone}%），尚有 {len(self.frontier_cells)} 格未知邊界")
+
+    def _finish_mapping(self, complete=True):
+        self.phase = "done"
+        self.frontier_cells = []
+        for t in self.tasks.values():
+            if t.kind == "explore" and t.status in ("pending", "assigned"):
+                t.status = "done"
+                if t.assignee:
+                    self._send(t.assignee, "cancel", task=t.id)
+        self.zones = {n: r for n, (r, _) in ZONES.items() if n not in self.manual_zones}
+        self.pending_zones = list(self.manual_zones)
+        self._zone_map = None
+        secs = (self.tick - self._explore_start) * 0.5
+        free_m2 = len(self.map.free_cells()) * CELL_M * CELL_M
+        self._log("map", f"建圖{'完成' if complete else '時間到，停止探索'}：{secs / 60:.1f} 分鐘，"
+                         f"地面 {free_m2:.0f} m²；已套用 {len(self.zones)} 個區域標註"
+                         + (f"，請在地圖上框出：{'、'.join(self.pending_zones)}" if self.pending_zones else ""))
+        self._save_map(secs, free_m2)
+        for r in self.sim.robots:
+            self._send(r.id, "park")
+        if self.known_dirt:
+            self._log("map", f"建圖期間記錄到 {len(self.known_dirt)} 格髒污，開始派清潔任務")
+
+    def _save_map(self, secs=None, free_m2=None):
+        if not self.map_file:
+            return
+        import os
+        import time
+        os.makedirs(os.path.dirname(self.map_file), exist_ok=True)
+        meta = {"built": time.strftime("%Y-%m-%d %H:%M"),
+                "free_m2": round(free_m2 if free_m2 is not None else len(self.map.free_cells()) * CELL_M ** 2)}
+        if secs is not None:
+            meta["survey_s"] = secs
+        with open(self.map_file, "w", encoding="utf-8") as f:
+            f.write(self.map.to_json({n: list(r) for n, r in self.zones.items()}, meta))
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        shown = os.path.relpath(self.map_file, root) if self.map_file.startswith(root) else self.map_file
+        self._log("map", f"地圖已存檔：{shown}")
+
+    def label_zone(self, name, rect):
+        """An operator draws a zone on the finished map and names it."""
+        canonical = name if name in ZONES else resolve_zone(name)
+        if not canonical:
+            options = "、".join(self.pending_zones or ZONES)
+            return False, f"不認得「{name}」，請用：{options}"
+        x0, y0, x1, y1 = rect
+        rect = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
+        self.zones[canonical] = rect
+        self._zone_map = None
+        if canonical in self.pending_zones:
+            self.pending_zones.remove(canonical)
+        n = len(self.zone_cells(canonical))
+        self._log("map", f"管理員標註區域「{canonical}」{rect}，{n * CELL_M * CELL_M:.0f} m² 地面"
+                         + (f"；尚待標註：{'、'.join(self.pending_zones)}" if self.pending_zones else ""))
+        self._save_map()
+        return True, canonical
+
+    def map_view(self):
+        explored = len(self.map.free_cells()) * CELL_M * CELL_M
+        return {"phase": self.phase, "occ": self.map.chars(), "frontiers": self.frontier_cells[:600],
+                "zones": [{"name": n, "rect": list(r)} for n, r in self.zones.items()],
+                "pending_zones": list(self.pending_zones), "free_m2": round(explored),
+                "elapsed_s": (self.tick - self._explore_start) * 0.5 if self.phase == "exploring" else None,
+                "file": self.map_file}

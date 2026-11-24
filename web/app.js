@@ -4,12 +4,13 @@ const CS = 18; // canvas pixels per cell
 const ROLE_COLOR = { sweeper: "#3ccf8e", mopper: "#4f8dff", arm: "#f2c94c" };
 const DIRT_COLOR = { dry: "#c79a5b", wet: "#39b6ff", mixed: "#b07cff" };
 const OBS_COLOR = { box: "#d9822b", cart: "#9aa7b8", pallet: "#8a6a43", cable: "#f2c94c" };
+const ZONE_INDEX = {}; // zone name -> colour index, stable while zones get labelled
 const ZONE_TINT = ["#2b3a52", "#2f3d3a", "#3a3346", "#26303d", "#33402f", "#2c3540", "#3d3a2c",
                    "#2f3a4a", "#40332f", "#2e3f46", "#3a2e3d"];
 const STATE_LABEL = { idle: "待命", moving: "移動中", waiting: "讓行等待", cleaning: "清潔中",
                       grasping: "夾取中", placing: "放置中", charging: "充電中" };
 const KIND_LABEL = { sweep: "掃地", mop: "拖地", patrol: "巡邏", clear: "搬移" };
-const LOG_CATS = { voice: "語音", llm: "LLM", dispatch: "派工", vision: "辨識", obstacle: "障礙",
+const LOG_CATS = { map: "建圖", voice: "語音", llm: "LLM", dispatch: "派工", vision: "辨識", obstacle: "障礙",
                    energy: "電量", conflict: "衝突", clean: "清潔" };
 const PRESETS = {
   sweeper: ["去掃貨架A區", "這裡有人打翻飲料，處理一下", "先清理生鮮區，避開地上的電線，最後再掃收銀區"],
@@ -32,7 +33,9 @@ let lastChatKey = "";
 const DISP = {};       // robot id -> {x, y} where it is drawn this frame
 const HIST = {};       // robot id -> [{tick, x, y}] recent positions from the server
 const CLOCK = { tps: 0, rate: 6, win: null, tick: 0, anchor: null, rt: null, lastMs: null };
-let mapLayer = null;   // static map drawn once into an offscreen canvas
+let mapLayer = null;   // the occupancy map + zones, redrawn into an offscreen canvas only when they change
+let mapKey = "";
+let drag = null;       // zone being drawn: {x0, y0, x1, y1, moved}
 
 async function api(path, body) {
   const opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
@@ -92,7 +95,12 @@ async function init() {
     document.getElementById("speed-val").textContent = speed.value;
     api("/api/control", { action: "speed", value: Number(speed.value) });
   };
-  canvas.addEventListener("click", onMapClick);
+  setupMapMouse();
+  document.getElementById("btn-remap").onclick = () => {
+    if (!confirm("清空地圖，讓機器人從頭探索建圖？已存的地圖會被新地圖取代。")) return;
+    lastLogKey = "";
+    api("/api/control", { action: "remap" });
+  };
   poll();
   requestAnimationFrame(frame);
 }
@@ -330,6 +338,86 @@ function setupMic() {
   };
 }
 
+function cellAt(e) {
+  const rect = canvas.getBoundingClientRect();
+  return [Math.max(0, Math.min(MAP.w - 1, Math.floor(((e.clientX - rect.left) / rect.width) * MAP.w))),
+          Math.max(0, Math.min(MAP.h - 1, Math.floor(((e.clientY - rect.top) / rect.height) * MAP.h)))];
+}
+
+function dragRect() {
+  return [Math.min(drag.x0, drag.x1), Math.min(drag.y0, drag.y1), Math.max(drag.x0, drag.x1), Math.max(drag.y0, drag.y1)];
+}
+
+function labeling() {
+  return STATE && STATE.map.phase === "done" && STATE.map.pending_zones.length > 0;
+}
+
+function setupMapMouse() {
+  // Click = select a robot / place things; drag (while zones wait to be labelled) = draw a zone.
+  const form = document.getElementById("zone-form");
+  const nameInput = document.getElementById("zone-name");
+  const msg = document.getElementById("zone-msg");
+  const closeForm = () => { form.hidden = true; drag = null; msg.textContent = ""; };
+  canvas.addEventListener("mousedown", (e) => {
+    if (!form.hidden) closeForm();
+    const [x, y] = cellAt(e);
+    drag = { x0: x, y0: y, x1: x, y1: y, moved: false };
+  });
+  canvas.addEventListener("mousemove", (e) => {
+    if (!drag || !labeling()) return;
+    const [x, y] = cellAt(e);
+    drag.x1 = x; drag.y1 = y;
+    drag.moved = drag.moved || x !== drag.x0 || y !== drag.y0;
+    canvas.style.cursor = "crosshair";
+  });
+  window.addEventListener("mouseup", (e) => {
+    if (!drag) return;
+    if (!drag.moved) { drag = null; if (e.target === canvas) onMapClick(e); return; }
+    // show the naming form next to the rectangle
+    const [x0, y0, x1, y1] = dragRect();
+    const wrap = form.parentElement.getBoundingClientRect(), r = canvas.getBoundingClientRect();
+    const sx = r.width / canvas.width;
+    form.style.left = `${Math.min(r.left - wrap.left + (x1 + 1) * CS * sx + 6, wrap.width - 300)}px`;
+    form.style.top = `${r.top - wrap.top + y0 * CS * sx}px`;
+    document.getElementById("zone-form-rect").textContent =
+      `${((x1 - x0 + 1) * MAP.cell_m).toFixed(1)} × ${((y1 - y0 + 1) * MAP.cell_m).toFixed(1)} m`;
+    document.getElementById("zone-names").innerHTML =
+      STATE.map.pending_zones.map((z) => `<option value="${z}">`).join("");
+    nameInput.value = STATE.map.pending_zones.length === 1 ? STATE.map.pending_zones[0] : "";
+    form.hidden = false;
+    nameInput.focus();
+  });
+  document.getElementById("zone-cancel").onclick = closeForm;
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const name = nameInput.value.trim();
+    if (!name) return;
+    const out = await api("/api/zone", { name, rect: dragRect() });
+    if (out.ok) closeForm();
+    else msg.textContent = out.message;
+  };
+}
+
+function renderMapStatus(s) {
+  const el = document.getElementById("map-status");
+  const m = s.map;
+  if (m.phase === "exploring") {
+    const pct = Math.min(100, Math.round((100 * m.free_m2) / (MAP.floor_cells * MAP.cell_m * MAP.cell_m)));
+    el.className = "map-status";
+    el.innerHTML = `<b>建圖中</b><span>${(m.elapsed_s / 60).toFixed(1)} 分鐘</span>` +
+      `<span>已建出 <b>${m.free_m2}</b> m² 地面</span><span>探索邊界 <b>${m.frontiers.length}</b> 格</span>` +
+      `<span class="bar" title="真實覆蓋率（只有模擬才知道）"><div style="width:${pct}%"></div></span><span>${pct}%</span>`;
+    el.hidden = false;
+  } else if (labeling()) {
+    el.className = "map-status labeling";
+    el.innerHTML = `<b>地圖已建好</b><span>請在地圖上<b>拖曳框出</b>區域並命名，尚待標註：<b>${m.pending_zones.join("、")}</b></span>`;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+  canvas.style.cursor = labeling() ? "crosshair" : "";
+}
+
 async function onMapClick(e) {
   const rect = canvas.getBoundingClientRect();
   const fx = ((e.clientX - rect.left) / rect.width) * MAP.w;
@@ -426,32 +514,41 @@ function cellRect(x, y, pad = 0) {
 }
 
 function drawMap() {
-  if (mapLayer && mapLayer.width === canvas.width && mapLayer.height === canvas.height) {
-    ctx.drawImage(mapLayer, 0, 0);
-    return;
+  const m = STATE.map;
+  const key = m.occ + JSON.stringify(m.zones);
+  if (!mapLayer || mapKey !== key || mapLayer.width !== canvas.width) {
+    const real = ctx;
+    mapLayer = mapLayer && mapLayer.width === canvas.width ? mapLayer : document.createElement("canvas");
+    mapLayer.width = canvas.width; mapLayer.height = canvas.height;
+    ctx = mapLayer.getContext("2d");
+    try { paintMap(m); } finally { ctx = real; }
+    mapKey = key;
   }
-  const real = ctx;
-  mapLayer = document.createElement("canvas");
-  mapLayer.width = canvas.width; mapLayer.height = canvas.height;
-  ctx = mapLayer.getContext("2d");
-  try { paintMap(); } finally { ctx = real; }
   ctx.drawImage(mapLayer, 0, 0);
 }
 
-function paintMap() {
+function paintMap(m) {
+  // The map the robots have built (not the ground truth): '?' unknown, '.' floor, '#' wall or object.
+  const occ = m.occ;
   ctx.fillStyle = "#1a212c";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  MAP.zones.forEach((z, i) => {
+  m.zones.forEach((z) => {
     const [x0, y0, x1, y1] = z.rect;
-    ctx.fillStyle = ZONE_TINT[i % ZONE_TINT.length];
+    const i = Object.keys(ZONE_INDEX).length;
+    ctx.fillStyle = ZONE_TINT[(ZONE_INDEX[z.name] ??= i) % ZONE_TINT.length];
     ctx.globalAlpha = 0.55;
     ctx.fillRect(x0 * CS, y0 * CS, (x1 - x0 + 1) * CS, (y1 - y0 + 1) * CS);
     ctx.globalAlpha = 1;
   });
 
-  ctx.fillStyle = "#475468";
-  for (const [x, y] of MAP.walls) ctx.fillRect(...cellRect(x, y));
+  for (let y = 0; y < MAP.h; y++) {
+    for (let x = 0; x < MAP.w; x++) {
+      const ch = occ[y * MAP.w + x];
+      if (ch === "#") { ctx.fillStyle = "#475468"; ctx.fillRect(...cellRect(x, y)); }
+      else if (ch === "?") { ctx.fillStyle = "#07090d"; ctx.fillRect(...cellRect(x, y)); }
+    }
+  }
 
   ctx.strokeStyle = "rgba(255,255,255,0.035)";
   ctx.lineWidth = 1;
@@ -460,7 +557,7 @@ function paintMap() {
 
   ctx.font = "bold 12px -apple-system, 'PingFang TC', sans-serif";
   ctx.fillStyle = "rgba(225,232,242,0.75)";
-  MAP.zones.forEach((z) => {
+  m.zones.forEach((z) => {
     const [x0, y0, x1] = z.rect;
     if (x1 - x0 < 3) { // narrow aisle: write the name vertically
       [...z.name].forEach((ch, i) => ctx.fillText(ch, x0 * CS + 6, y0 * CS + 30 + i * 14));
@@ -470,18 +567,60 @@ function paintMap() {
   });
 
   for (const [x, y] of MAP.drop_cells) {
+    if (occ[y * MAP.w + x] !== ".") continue;
     ctx.strokeStyle = "rgba(242,201,76,0.5)";
     ctx.setLineDash([3, 3]);
     ctx.strokeRect(...cellRect(x, y, 2));
     ctx.setLineDash([]);
   }
-  MAP.docks.forEach(([x, y], i) => {
+  MAP.docks.forEach(([x, y]) => {
     ctx.fillStyle = "#2e3b2a";
     ctx.fillRect(...cellRect(x, y, 1));
     ctx.fillStyle = "#9be38a";
     ctx.font = "10px sans-serif";
     ctx.fillText("⚡", x * CS + 4, y * CS + 13);
   });
+}
+
+function drawMapping(s) {
+  const m = s.map;
+  const showTruth = document.getElementById("show-truth").checked;
+  if (m.phase === "exploring" && showTruth) { // walls the robots haven't found yet, as faint outlines
+    ctx.strokeStyle = "rgba(160,180,210,0.18)";
+    ctx.lineWidth = 1;
+    for (const [x, y] of MAP.walls) {
+      if (m.occ[y * MAP.w + x] !== "#") ctx.strokeRect(x * CS + 2.5, y * CS + 2.5, CS - 5, CS - 5);
+    }
+  }
+  ctx.fillStyle = "rgba(79,209,232,0.85)";
+  for (const [x, y] of m.frontiers) ctx.fillRect(x * CS + 5, y * CS + 5, CS - 10, CS - 10);
+
+  if (document.getElementById("show-lidar").checked) {
+    for (const r of s.robots) {
+      if (!r.scan || !r.scan.length) continue;
+      const p = DISP[r.id] || r;
+      const ox = p.x * CS + CS / 2, oy = p.y * CS + CS / 2;
+      ctx.strokeStyle = ROLE_COLOR[r.role];
+      ctx.globalAlpha = m.phase === "exploring" ? 0.16 : 0.07;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (const [x, y] of r.scan) { ctx.moveTo(ox, oy); ctx.lineTo(x * CS, y * CS); }
+      ctx.stroke();
+      ctx.globalAlpha = m.phase === "exploring" ? 0.8 : 0.35;
+      ctx.fillStyle = ROLE_COLOR[r.role];
+      for (const [x, y] of r.scan) ctx.fillRect(x * CS - 1.5, y * CS - 1.5, 3, 3);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  if (drag && drag.moved) {
+    const [x0, y0, x1, y1] = dragRect();
+    ctx.fillStyle = "rgba(245,200,90,0.18)";
+    ctx.fillRect(x0 * CS, y0 * CS, (x1 - x0 + 1) * CS, (y1 - y0 + 1) * CS);
+    ctx.strokeStyle = "#f5c85a"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.strokeRect(x0 * CS + 1, y0 * CS + 1, (x1 - x0 + 1) * CS - 2, (y1 - y0 + 1) * CS - 2);
+    ctx.setLineDash([]);
+  }
 }
 
 function drawState() {
@@ -492,6 +631,7 @@ function drawState() {
   for (const [x, y] of s.no_go_buffer) ctx.fillRect(...cellRect(x, y));
   ctx.fillStyle = "rgba(255,93,93,0.45)";
   for (const [x, y] of s.no_go_core) ctx.fillRect(...cellRect(x, y));
+  drawMapping(s);
 
   for (const d of s.dirt) {
     if (!d.known && !showTruth) continue;
@@ -641,6 +781,8 @@ function render() {
   document.getElementById("backends").innerHTML =
     `<span>規劃器 ${s.backends.planner}</span><span>ASR ${s.backends.asr}</span><span>偵測 ${s.backends.detector}</span>`;
   document.getElementById("btn-pause").textContent = s.paused ? "繼續" : "暫停";
+  document.getElementById("btn-remap").hidden = s.map.phase === "given";
+  renderMapStatus(s);
   const st = s.stats;
   document.getElementById("stats").innerHTML =
     `場上髒污 <b>${st.dirt_left}</b>（中控台已知 <b>${st.dirt_known}</b>）・已清除 <b>${st.cleaned}</b> 格・` +

@@ -165,3 +165,77 @@ class AddressedCommandTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MappingTest(unittest.TestCase):
+    """The robots survey the store with lidar before work starts (config [mapping])."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        self.cfg = {"mapping": {"mode": "auto", "file": f"{self.dir.name}/map.json",
+                                "manual_zones": ["促銷區", "入口"]}}
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def survey(self):
+        sim = Simulation(self.cfg)
+        while sim.console.phase == "exploring" and sim.tick < 1000:
+            sim.step()
+        return sim
+
+    def test_survey_maps_the_floor_and_saves_it(self):
+        sim = self.survey()
+        c, w = sim.console, sim.world
+        self.assertEqual(c.phase, "done")
+        floor = {(x, y) for x in range(48) for y in range(32) if w.is_floor((x, y))}
+        free = set(c.map.free_cells())
+        self.assertFalse(free - floor, "a wall was mapped as floor")
+        self.assertGreater(len(free & floor) / len(floor), 0.98)
+        self.assertTrue(all(c.map.is_occupied(x) for x in w.walls))
+        self.assertTrue(c.map.is_occupied((21, 16)))  # the box in aisle B is on the map...
+        self.assertFalse(c.map.is_occupied((34, 23)))  # ...the cable on the floor is below the lidar
+        self.assertEqual(sim.collisions, 0)
+        import os
+        self.assertTrue(os.path.exists(self.cfg["mapping"]["file"]))
+        self.assertEqual(c.pending_zones, ["促銷區", "入口"])
+        self.assertNotIn("入口", c.zones)
+
+    def test_no_cleaning_while_mapping_then_cleaning_starts(self):
+        sim = Simulation(self.cfg)
+        run(sim, 40)
+        self.assertEqual(sim.console.phase, "exploring")
+        self.assertTrue(sim.console.known_dirt)  # cameras note dirt on the way...
+        self.assertFalse([t for t in sim.console.tasks.values() if t.kind != "explore" and t.status == "assigned"])
+        while sim.console.phase == "exploring":
+            sim.step()
+        run(sim, 30)
+        self.assertTrue(any(t.kind in ("sweep", "mop") and t.status in ("assigned", "done")
+                            for t in sim.console.tasks.values()))  # ...and it is cleaned once the map is done
+
+    def test_saved_map_is_loaded_and_zones_are_labelled_by_hand(self):
+        self.survey()
+        sim = Simulation(self.cfg)  # second start: no survey
+        c = sim.console
+        self.assertEqual(c.phase, "done")
+        self.assertTrue(c.map.is_free((44, 26)))
+        run(sim, 10, [(1, "M1", "去拖入口")])
+        self.assertIn("地圖上還沒有入口", c.chat[-1]["text"])
+        ok, _ = c.label_zone("門口", [41, 23, 46, 30])  # alias of 入口
+        self.assertTrue(ok)
+        self.assertEqual(c.zone_of((44, 26)), "入口")
+        bad, msg = c.label_zone("廁所", [1, 1, 2, 2])
+        self.assertFalse(bad)
+        run(sim, 10, [(sim.tick, "M1", "去拖入口")])
+        self.assertTrue(any(t.zone == "入口" and t.kind == "mop" for t in c.tasks.values()))
+        reloaded = Simulation(self.cfg).console  # the label was saved with the map
+        self.assertIn("入口", reloaded.zones)
+        self.assertEqual(reloaded.pending_zones, ["促銷區"])
+
+    def test_map_forgets_a_box_after_the_arm_moves_it(self):
+        sim = self.survey()
+        self.assertTrue(sim.console.map.is_occupied((21, 16)))
+        run(sim, 400)
+        self.assertNotIn((21, 16), sim.world.obstacle_cells)
+        self.assertFalse(sim.console.map.is_occupied((21, 16)))

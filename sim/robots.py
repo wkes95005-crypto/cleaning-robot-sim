@@ -2,6 +2,7 @@
 own path with A* on the console's shared map, and talks to the console only through the bus."""
 from __future__ import annotations
 
+from .mapping import lidar_scan, make_rng
 from .pathfinding import astar, chebyshev, neighbors4, neighbors8
 
 SENSOR_RADIUS = 3
@@ -29,6 +30,8 @@ class Robot:
         self.carrying = None
         self.wait = 0
         self.odometer = 0
+        self.scan_ends = []        # last lidar sweep, for the dashboard
+        self._lidar_rng = make_rng(sim.seed, rid)
 
     # ------------------------------------------------------------------ comms
     def send(self, topic, **payload):
@@ -37,7 +40,7 @@ class Robot:
     def hear(self, audio):
         """Microphone -> on-board ASR -> text to the console, tagged with where the robot is."""
         text = self.asr.transcribe(audio)
-        self.send("voice_text", text=text, cell=self.pos, zone=self.sim.world.zone_of(self.pos))
+        self.send("voice_text", text=text, cell=self.pos, zone=self.sim.console.zone_of(self.pos))
         return text
 
     def status(self):
@@ -70,6 +73,8 @@ class Robot:
         for m in self.sim.bus.receive(self.id):
             self._on_message(m)
         self._perceive()
+        if self.sim.lidar:
+            self._scan()
         if self.busy:
             self._work_tick()
         elif self.mode and self.pos == self.dock:
@@ -117,6 +122,11 @@ class Robot:
                 self.send("dirt_detected", cell=det.cell, label=det.label,
                           conf=det.confidence, near=det.near)
 
+    def _scan(self):
+        """Lidar sweep -> free and hit cells to the console, which fuses every robot's scans into one map."""
+        free, hits, self.scan_ends = lidar_scan(self.sim.world, self.pos, self._lidar_rng)
+        self.send("scan", free=list(free), hits=list(hits))
+
     # ------------------------------------------------------------------ goals and motion
     def _goal(self):
         if self.mode:
@@ -130,7 +140,7 @@ class Robot:
                 if not o or o.cell is None or o.cell != tuple(t["target"]):
                     self._finish(note="障礙物已不在原位")
                     return None
-                goals = {n for n in neighbors4(o.cell) if self.sim.world.is_floor(n) and not self._known_blocked(n)}
+                goals = {n for n in neighbors4(o.cell) if self._passable(n)}
                 return goals or None
             return {tuple(t["drop"])}
         while t["waypoints"] and t["kind"] != "patrol" and self._covered(t["waypoints"][0]):
@@ -155,7 +165,8 @@ class Robot:
         return c in self.local_blocked or c in self.sim.console.no_go_core
 
     def _passable(self, c):
-        return self.sim.world.is_floor(c) and not self._known_blocked(c)
+        # plan only on what the shared map knows is floor (unknown space and walls are off limits)
+        return self.sim.console.map.is_free(c) and not self._known_blocked(c)
 
     def _hazard_cost(self, c):
         return 8 if self.role != "arm" and c in self.sim.console.no_go_buffer else 0

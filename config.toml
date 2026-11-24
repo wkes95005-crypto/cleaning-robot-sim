@@ -6,6 +6,11 @@ ticks_per_second = 6     # 儀表板播放速度（每 tick = 模擬 0.5 秒）
 latency_ticks = 1        # 機器人 ↔ 中控台的通訊延遲
 scenario = "default"     # default：預設賣場情境；empty：空場地
 
+[mapping]                # 機器人用光達探索並建出共用地圖
+mode = "auto"            # auto：有存檔就載入，沒有就先探索建圖再存檔；explore：每次都重新建圖；given：直接給地圖（不建圖）
+file = "maps/supermarket.json"
+manual_zones = ["促銷區", "入口"]   # 建好圖後要由人在儀表板上框出、命名的區域；其他區域自動套用
+
 [planner]                # 中控台上的任務規劃器（LLM）
 backend = "ollama"       # ollama：本地 LLM（Ollama 沒開時自動改用規則）；rule：關鍵字規則（不需模型）
 model = "gemma3:4b"      # backend = "ollama" 時使用，例如 gemma3:4b、gemma3:12b、llama3.1:8b、phi4-mini

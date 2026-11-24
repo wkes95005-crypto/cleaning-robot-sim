@@ -18,12 +18,24 @@
     <button id="btn-step" title="暫停時前進一步">單步</button>
     <label>速度 <input id="speed" type="range" min="1" max="30" value="6"><span id="speed-val">6</span> tick/s</label>
     <button id="btn-reset">重置情境</button>
+    <button id="btn-remap" title="清空地圖，讓機器人重新探索建圖">重新建圖</button>
   </div>
 </header>
 
 <main>
   <section class="map-col">
-    <div class="map-wrap"><canvas id="map"></canvas></div>
+    <div class="map-status" id="map-status" hidden></div>
+    <div class="map-wrap">
+      <canvas id="map"></canvas>
+      <form class="zone-form" id="zone-form" hidden>
+        <span id="zone-form-rect"></span>
+        <input id="zone-name" list="zone-names" placeholder="區域名稱" autocomplete="off">
+        <datalist id="zone-names"></datalist>
+        <button class="primary" type="submit">標註</button>
+        <button type="button" id="zone-cancel">取消</button>
+        <span class="zone-msg" id="zone-msg"></span>
+      </form>
+    </div>
     <div class="toolbar">
       <span class="label">點地圖放置：</span>
       <label><input type="radio" name="tool" value="none" checked>不放置</label>
@@ -33,7 +45,8 @@
       <label><input type="radio" name="tool" value="obstacle:box"><i class="sw box"></i>紙箱</label>
       <label><input type="radio" name="tool" value="obstacle:cart"><i class="sw cart"></i>推車</label>
       <label><input type="radio" name="tool" value="obstacle:cable"><i class="sw cable"></i>電線（不可移動）</label>
-      <label class="toggle"><input type="checkbox" id="show-truth" checked>顯示尚未被發現的物件</label>
+      <label class="toggle"><input type="checkbox" id="show-lidar" checked>光達射線</label>
+      <label><input type="checkbox" id="show-truth" checked>顯示尚未被發現的物件</label>
     </div>
     <div class="legend">
       <span><i class="dot sweeper"></i>掃地機 S1/S2</span>
@@ -42,6 +55,8 @@
       <span><i class="sq nogo"></i>禁區（已知障礙）</span>
       <span><i class="sq buffer"></i>避讓範圍</span>
       <span><i class="sq faint"></i>半透明＝真實存在但中控台還不知道</span>
+      <span><i class="sq unknown"></i>未探索</span>
+      <span><i class="sq frontier"></i>探索邊界</span>
     </div>
     <div class="stats" id="stats"></div>
   </section>

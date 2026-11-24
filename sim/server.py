@@ -32,9 +32,9 @@ class Runner:
                     self.sim.step()
             time.sleep(1.0 / max(self.tps, 0.5))
 
-    def reset(self):
+    def reset(self, remap=False):
         with self.lock:
-            self.sim = Simulation(self.cfg)
+            self.sim = Simulation(self.cfg, remap=remap)
 
 
 def make_handler(runner):
@@ -151,6 +151,11 @@ def make_handler(runner):
                 with runner.lock:
                     rid, heard = runner.sim.hear(text, data.get("robot") or "S1")
                 return self._json({"ok": True, "robot": rid, "text": heard})
+            if self.path == "/api/zone":
+                with runner.lock:
+                    ok, msg = runner.sim.console.label_zone(str(data.get("name", "")).strip(),
+                                                            [int(v) for v in data["rect"]])
+                return self._json({"ok": ok, "message": msg})
             if self.path == "/api/spawn":
                 with runner.lock:
                     ok = runner.sim.spawn(data.get("kind"), data.get("type"), (int(data["x"]), int(data["y"])))
@@ -168,6 +173,8 @@ def make_handler(runner):
                         runner.sim.step()
                 elif action == "reset":
                     runner.reset()
+                elif action == "remap":  # survey again from an empty map
+                    runner.reset(remap=True)
                 return self._json({"ok": True, "paused": runner.paused, "tps": runner.tps})
             return self._json({"ok": False, "error": "not found"}, 404)
 

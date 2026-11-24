@@ -17,3 +17,6 @@ webots/.frames/
 
 # Webots window layout
 *.wbproj
+
+# Map built by the robots on first start (delete it, or press 重新建圖, to survey again)
+maps/

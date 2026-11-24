@@ -1,6 +1,8 @@
 """Simulation clock: steps the console and every robot, and resolves who gets to move into which cell."""
 from __future__ import annotations
 
+import os
+
 from .asr import make_asr
 from .bus import Bus
 from .console import Console
@@ -9,6 +11,7 @@ from .planner import make_planner
 from .robots import ROLE_LABEL
 from .world import CELL_M, DIRT_KINDS, OBSTACLE_KINDS, W, H, ZONES, World, load_default_scenario
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TICK_S = 0.5  # simulated seconds per tick (robots move one 0.5 m cell per tick = 1 m/s)
 
 DEFAULT_FLEET = [  # stepping order = right-of-way order
@@ -20,7 +23,7 @@ DEFAULT_FLEET = [  # stepping order = right-of-way order
 
 
 class Simulation:
-    def __init__(self, cfg=None):
+    def __init__(self, cfg=None, remap=False):
         from .robots import Robot
 
         self.cfg = cfg or {}
@@ -42,6 +45,17 @@ class Simulation:
         self.occupied = {r.pos for r in self.robots}
         self.reserved = set()
         self.collisions = 0
+        # [mapping] mode: given = the map is known (no lidar); auto = load the saved map, or survey and
+        # save one if there is none (or remap=True); explore = survey on every start
+        mcfg = self.cfg.get("mapping", {})
+        mode = mcfg.get("mode", "given")
+        self.lidar = mode != "given"
+        map_file = os.path.join(ROOT, mcfg.get("file", "maps/supermarket.json"))
+        manual = mcfg.get("manual_zones", [])
+        if mode == "auto" and os.path.exists(map_file) and not remap:
+            self.console.load_map(map_file, manual)
+        elif mode in ("auto", "explore"):
+            self.console.start_mapping(map_file, manual)
 
     def robot(self, rid):
         return next((r for r in self.robots if r.id == rid), None)
@@ -88,7 +102,8 @@ class Simulation:
                 "zones": [{"name": n, "rect": r} for n, (r, _) in ZONES.items()],
                 "docks": w.docks, "drop_cells": w.drop_cells,
                 "fleet": [{"id": r.id, "role": r.role, "label": ROLE_LABEL[r.role]} for r in self.robots],
-                "dirt_kinds": DIRT_KINDS, "obstacle_kinds": OBSTACLE_KINDS}
+                "dirt_kinds": DIRT_KINDS, "obstacle_kinds": OBSTACLE_KINDS,
+                "floor_cells": sum(1 for x in range(W) for y in range(H) if w.is_floor((x, y)))}
 
     def snapshot(self):
         w, c = self.world, self.console
@@ -104,6 +119,7 @@ class Simulation:
                 "battery": round(r.battery, 1), "water": None if r.water is None else round(r.water, 1),
                 "state": r.state, "mode": r.mode, "task": r.task["id"] if r.task else None,
                 "carrying": r.carrying.kind if r.carrying else None, "path": r.path[:40],
+                "scan": [[round(x, 1), round(y, 1)] for x, y in r.scan_ends[::2]] if self.lidar else [],
                 "dock": r.dock, "odometer_m": r.odometer * CELL_M, "held": r.id in c.held,
             } for r in self.robots],
             "dirt": [{"x": d.cell[0], "y": d.cell[1], "kind": d.kind,
@@ -121,6 +137,7 @@ class Simulation:
             "backends": {"planner": c.planner.name, "asr": self.robots[0].asr.name,
                          "detector": self.robots[0].detector.name},
             "held": sorted(c.held), "avoid": sorted(c.avoid_kinds), "thinking": len(c._plans),
+            "map": c.map_view(),
             "stats": {**c.stats, "dirt_left": len(w.dirt), "dirt_known": len(c.known_dirt),
                       "collisions": self.collisions, "messages": self.bus.sent},
         }
