@@ -59,9 +59,26 @@ python3 -m unittest discover -s tests -t .
 
 | 模組 | 預設 | 換成真的模型 |
 |---|---|---|
-| 任務規劃 `[planner]` | `rule`：關鍵字規則 | `backend = "ollama"`、`model = "gemma3:4b"`（任何 Ollama 模型）；LLM 失敗時自動退回規則規劃器 |
-| 語音轉文字 `[asr]` | `text`：儀表板輸入的句子當成收音結果 | `backend = "whisper"`（需 `pip install faster-whisper`） |
+| 任務規劃 `[planner]` | `ollama`：本地 Gemma 3 4B；Ollama 沒開或回傳不合格時，自動退回規則規劃器 | `backend = "rule"` 只用關鍵字規則；`model` 可換成任何 Ollama 模型 |
+| 語音轉文字 `[asr]` | `whisper`：儀表板 🎤 錄音，交給本機 Whisper（mlx-whisper，`.venv-asr`）轉成文字 | `backend = "text"`：只用打字，🎤 改用瀏覽器的語音辨識（Chrome 會經過 Google） |
 | 髒污偵測 `[detector]` | `sim`：讀真實髒污並加入誤判 | `backend = "yolo"` 的介面已預留；2D 模擬沒有鏡頭影像，要接 Gazebo / Webots 或實拍影像才能真正推論 |
+
+### 本地 LLM（Gemma 3 4B）
+
+```bash
+brew install ollama && brew services start ollama
+ollama pull gemma3:4b        # 約 3.4 GB，16 GB 的 Mac 可以和 Webots、YOLO 同時跑
+python3 tools/eval_planner.py   # 用 16 句口語指令比較規則和 LLM
+```
+
+- 規劃器把 JSON schema 交給 Ollama 的 structured output，模型只能輸出合法的動作、區域和模式；系統提示另附 5 個示範例句。
+- 實測（M5、16 GB）：規則規劃器 9/16，Gemma 3 4B **15/16**，每句約 1.1–2.5 秒（中位數 1.5 秒）。像「這邊黏黏的」「促銷區地上都是紙屑」「所有人都回去」這種沒有關鍵字的句子，只有 LLM 聽得懂。
+- 說「這邊、這裡」時，用的是聽到指令那台機器人所在的區域；如果它站在不屬於任何區域的通道上，就清理它周圍約 1 公尺的範圍。
+- **🎤 本機語音辨識**：按一下開始說話，講完停頓約 1 秒自動送出。錄音送到模擬器，由 `tools/asr_server.py`（Whisper large-v3-turbo，跑在 Mac 的 GPU）轉成文字，當作那台機器人機上 ASR 聽到的內容，全程不上網。`run.py` 和 Webots 的 `fleet_bridge` 會自動啟動這個服務；服務沒開時，🎤 會自動改用瀏覽器的語音辨識。
+  第一次使用要先建環境：`python3 -m venv .venv-asr && .venv-asr/bin/pip install mlx-whisper`（另需 `brew install ffmpeg`；模型約 1.6 GB，第一次啟動時下載）。
+- 對靜音或雜訊，Whisper 會「腦補」出歌詞或重複的字，所以服務先過濾太安靜的錄音，再丟掉重複或像雜訊的片段。
+- 語音轉文字實測：mlx-whisper 的 `whisper-large-v3-turbo` 每句約 0.5 秒，8 句幾乎全對；`whisper-small` 更快，但區域名稱常聽錯（生鮮區 → 生先區）。在系統提示裡列出區域名稱可以明顯提升準確度。
+- 不使用中國的模型（Qwen、DeepSeek、GLM、Yi 等）。
 
 機隊組成、初始電量、通訊延遲也在 `config.toml` 裡設定。
 

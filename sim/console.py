@@ -150,11 +150,11 @@ class Console:
         role = self.sim.robot(rid).role
         context = {"robot_zone": zone, "heard_by": rid, "heard_by_role": ROLE_LABEL[role]}
         if self.planner.synchronous:
-            self._apply_plan(self.planner.plan(text, context), rid, zone)
+            self._apply_plan(self.planner.plan(text, context), rid, zone, tuple(cell))
         else:
             self._log("llm", f"送交 {self.planner.name} 規劃中…")
             self._say(rid, "收到，讓我想一下…")
-            self._plans.append((self._pool.submit(self.planner.plan, text, context), rid, zone))
+            self._plans.append((self._pool.submit(self.planner.plan, text, context), rid, zone, tuple(cell)))
 
     def _on_dirt_detected(self, rid, cell, label, conf, near):
         cell = tuple(cell)
@@ -266,17 +266,17 @@ class Console:
     # ------------------------------------------------------------------ planning
     def _collect_plans(self):
         still = []
-        for fut, rid, zone in self._plans:
+        for fut, rid, zone, cell in self._plans:
             if fut.done():
                 try:
-                    self._apply_plan(fut.result(), rid, zone)
+                    self._apply_plan(fut.result(), rid, zone, cell)
                 except Exception as e:
                     self._log("llm", f"規劃失敗：{e}")
             else:
-                still.append((fut, rid, zone))
+                still.append((fut, rid, zone, cell))
         self._plans = still
 
-    def _apply_plan(self, plan, rid, heard_zone):
+    def _apply_plan(self, plan, rid, heard_zone, heard_cell=None):
         """Turn a plan into tasks. Commands are addressed: work the hearing robot can do is pinned to it."""
         note = plan.get("note")
         self._log("llm", f"{self.planner.name} → {json.dumps(plan['steps'], ensure_ascii=False)}"
@@ -317,6 +317,17 @@ class Console:
                 replies.append("我繼續工作" if pin else "全體恢復工作")
             else:
                 zone = s.get("zone") or heard_zone
+                if a == "clean_zone" and zone not in ZONES and not s.get("zone") and heard_cell:
+                    # "這邊" said in an aisle that belongs to no zone: clean the area around the robot
+                    area = self._area_around(heard_cell)
+                    if area:
+                        if pin:
+                            self.held.discard(pin)
+                        ids, text = self._zone_clean("這附近", s["mode"], prev, pin, area=area)
+                        replies.append(text)
+                        if ids and not plan.get("parallel"):
+                            prev = ids
+                        continue
                 if zone not in ZONES:
                     self._log("llm", f"指令沒有可用的區域（{zone}），略過這一步")
                     replies.append("但我不確定是哪個區域")
@@ -355,9 +366,17 @@ class Console:
         self._release(rid)
         self._send(rid, "dock" if go_home else "hold")
 
-    def _zone_clean(self, zone, mode, deps, pin=None):
+    def _area_around(self, cell, radius=2):
+        """Floor cells within `radius` (Chebyshev) of a cell, for "clean here" outside any zone."""
+        world, (x0, y0) = self.sim.world, cell
+        return [(x, y) for x in range(x0 - radius, x0 + radius + 1) for y in range(y0 - radius, y0 + radius + 1)
+                if world.is_floor((x, y)) and (x, y) not in self.no_go_core]
+
+    def _zone_clean(self, zone, mode, deps, pin=None, area=None):
+        """Clean a whole zone, or with `area` just those cells (then `zone` is only the label)."""
         world = self.sim.world
-        cells = [c for c in world.zone_cells(zone) if c not in self.no_go_core]
+        cells = area or [c for c in world.zone_cells(zone) if c not in self.no_go_core]
+        scope = {"zone": None, "cells": set(area)} if area else {"zone": zone}
         role = self.sim.robot(pin).role if pin else None
         n_sweepers = sum(r.role == "sweeper" for r in self.sim.robots)
         sweep_ids, ids, said = [], [], []
@@ -369,7 +388,7 @@ class Console:
             said.append("我是掃地機")
         if mode in ("sweep", "sweep_then_mop"):
             if role == "sweeper":  # the robot that was spoken to does the whole zone itself
-                t = self._new_task(kind="sweep", role="sweeper", priority=3, zone=zone, source="voice",
+                t = self._new_task(kind="sweep", role="sweeper", priority=3, **scope, source="voice",
                                    waypoints=coverage_waypoints(cells), depends_on=list(deps), pinned=pin,
                                    title=f"掃地：{zone}（指定 {pin}）")
                 sweep_ids.append(t.id)
@@ -378,14 +397,14 @@ class Console:
                 parts = [cells] if len(cells) < 60 or n_sweepers < 2 else self._split(cells, n_sweepers)
                 for i, part in enumerate(parts):
                     suffix = f"（第 {i + 1}/{len(parts)} 段）" if len(parts) > 1 else ""
-                    t = self._new_task(kind="sweep", role="sweeper", priority=2, zone=zone, source="voice",
+                    t = self._new_task(kind="sweep", role="sweeper", priority=2, **scope, source="voice",
                                        waypoints=coverage_waypoints(part), depends_on=list(deps),
                                        title=f"掃地：{zone}{suffix}")
                     sweep_ids.append(t.id)
                 said.append(f"{zone}掃地交給掃地機" + ("分段同時作業" if len(parts) > 1 else ""))
         if mode in ("mop", "sweep_then_mop"):
             mine = role == "mopper"
-            t = self._new_task(kind="mop", role="mopper", priority=3 if mine else 2, zone=zone, source="voice",
+            t = self._new_task(kind="mop", role="mopper", priority=3 if mine else 2, **scope, source="voice",
                                waypoints=coverage_waypoints(cells), depends_on=list(deps) + sweep_ids,
                                pinned=pin if mine else None,
                                title=f"拖地：{zone}" + (f"（指定 {pin}）" if mine else "")

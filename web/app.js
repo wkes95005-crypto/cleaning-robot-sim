@@ -216,28 +216,117 @@ function streamCamera(img, robotId, fps, active, onFrame) {
 }
 
 function setupMic() {
-  // Browser speech recognition stands in for the robot's microphone; the robot's own ASR still
-  // "hears" the resulting text, exactly as with typed input.
+  // With [asr] backend = "whisper" the button records the microphone and the simulator runs Whisper
+  // locally as the robot's on-board ASR; nothing goes to the cloud. Otherwise (or if the Whisper
+  // service is down) the browser's speech recognition stands in, which in Chrome uses Google's service.
   const btn = document.getElementById("mic");
+  const input = document.getElementById("cmd-text");
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) {
+  const canRecord = !!(navigator.mediaDevices && window.MediaRecorder);
+  let useWhisper = MAP.asr_audio && canRecord;
+  let stopRecording = null;
+
+  const status = (text) => { input.placeholder = text; };
+  const idle = () => {
+    btn.classList.remove("listening", "busy");
+    const r = MAP.fleet.find((f) => f.id === selected);
+    status(`對 ${selected}（${r.label}）說…`);
+  };
+  const title = () => {
+    btn.title = useWhisper ? "按一下開始說話，停頓約 1 秒自動送出（本機 Whisper 辨識，不上網）"
+                           : "用瀏覽器的語音辨識代替機器人麥克風（Chrome 會經過 Google 的語音服務）";
+  };
+  title();
+
+  async function recordWithWhisper() {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true,
+                                                                    noiseSuppression: true } });
+    } catch (e) {
+      status("無法使用麥克風：請允許瀏覽器存取麥克風");
+      return;
+    }
+    const rid = selected;
+    const rec = new MediaRecorder(stream);
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    // Stop by itself after ~1 s of quiet following speech (or 10 s at most).
+    const ctxA = new AudioContext();
+    const analyser = ctxA.createAnalyser();
+    ctxA.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    let spoke = false, quietSince = performance.now();
+    const started = performance.now();
+    const watch = setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length);
+      const now = performance.now();
+      if (rms > 0.02) { spoke = true; quietSince = now; }
+      if ((spoke && now - quietSince > 1100) || now - started > 10000 || (!spoke && now - started > 5000)) finish();
+    }, 100);
+    function finish() {
+      if (rec.state === "recording") rec.stop();
+    }
+    stopRecording = finish;
+    rec.onstop = async () => {
+      clearInterval(watch);
+      stopRecording = null;
+      stream.getTracks().forEach((t) => t.stop());
+      ctxA.close();
+      if (!spoke) return idle();
+      btn.classList.remove("listening");
+      btn.classList.add("busy");
+      status("本機 Whisper 辨識中…");
+      try {
+        const res = await fetch(`/api/voice?robot=${encodeURIComponent(rid)}`, {
+          method: "POST", body: new Blob(chunks, { type: rec.mimeType }) });
+        const out = await res.json();
+        if (res.status === 503 || res.status === 409) { // service down: fall back to the browser
+          useWhisper = false;
+          title();
+          idle();
+          status("本機 Whisper 沒有開，改用瀏覽器語音辨識，再按一次 🎤");
+          return;
+        }
+        idle();
+        if (!out.text) status("沒有聽清楚，請再說一次");
+      } catch (e) {
+        idle();
+        status("語音送出失敗");
+      }
+    };
+    rec.start();
+    btn.classList.add("listening");
+    status("錄音中…說完停頓一下就會送出");
+  }
+
+  function recognizeInBrowser() {
+    if (!SR) return status("這個瀏覽器不支援語音辨識，請用打字輸入");
+    const rec = new SR();
+    rec.lang = "zh-TW";
+    rec.interimResults = false;
+    rec.onresult = (e) => {
+      input.value = e.results[0][0].transcript;
+      sendCommand();
+    };
+    rec.onend = idle;
+    rec.onerror = idle;
+    stopRecording = () => rec.stop();
+    btn.classList.add("listening");
+    rec.start();
+  }
+
+  if (!useWhisper && !SR) {
     btn.disabled = true;
     btn.title = "這個瀏覽器不支援語音辨識，請用打字輸入";
     return;
   }
-  const rec = new SR();
-  rec.lang = "zh-TW";
-  rec.interimResults = false;
-  rec.onresult = (e) => {
-    document.getElementById("cmd-text").value = e.results[0][0].transcript;
-    sendCommand();
-  };
-  rec.onend = () => btn.classList.remove("listening");
-  rec.onerror = () => btn.classList.remove("listening");
   btn.onclick = () => {
-    if (btn.classList.contains("listening")) return rec.stop();
-    btn.classList.add("listening");
-    rec.start();
+    if (btn.classList.contains("busy")) return;
+    if (stopRecording) return stopRecording();
+    if (useWhisper) recordWithWhisper();
+    else recognizeInBrowser();
   };
 }
 

@@ -131,6 +131,19 @@ class AddressedCommandTest(unittest.TestCase):
         t = next(t for t in sim.console.tasks.values() if t.zone == "貨架B區" and t.kind == "sweep")
         self.assertEqual(t.assignee, "S1")  # picks its own task back up
 
+    def test_here_in_an_aisle_cleans_around_the_robot(self):
+        sim = Simulation()
+        w = sim.world
+        aisle = next(c for c in sorted(w.zone_map.keys() | {(x, y) for x in range(48) for y in range(32)})
+                     if w.is_floor(c) and w.zone_of(c) == "通道" and c not in w.obstacle_cells)
+        plan = {"steps": [{"action": "clean_zone", "zone": None, "mode": "sweep"}], "parallel": False, "who": "self"}
+        sim.console._apply_plan(plan, "S1", "通道", aisle)
+        t = next(t for t in sim.console.tasks.values() if t.source == "voice")
+        self.assertIsNone(t.zone)
+        self.assertIn(aisle, t.cells)
+        self.assertTrue(all(max(abs(c[0] - aisle[0]), abs(c[1] - aisle[1])) <= 2 for c in t.cells))
+        self.assertEqual(sim.console.chat[-1]["text"], "收到，我去掃這附近。")
+
     def test_everyone_dock(self):
         sim = Simulation()
         run(sim, 80, [(40, "A1", "全部回充電站待命")])

@@ -10,6 +10,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .asr import start_service
 from .engine import Simulation
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -109,6 +110,7 @@ def make_handler(runner):
                 with runner.lock:
                     info = runner.sim.map_info()
                 info["cameras"] = bool(getattr(runner, "frames_dir", None))
+                info["asr_audio"] = bool(getattr(runner.sim.robots[0].asr, "audio", False))
                 return self._json(info)
             if self.path == "/api/state":
                 with runner.lock:
@@ -117,7 +119,30 @@ def make_handler(runner):
                 return self._json(snap)
             return super().do_GET()
 
+        def _voice(self, rid):
+            """Audio recorded at the dashboard: the robot's on-board ASR turns it into text, then it is
+            heard exactly like a typed command. Transcription runs outside the simulation lock."""
+            audio = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            with runner.lock:
+                robot = runner.sim.robot(rid) or runner.sim.robots[0]
+            if not getattr(robot.asr, "audio", False):
+                return self._json({"ok": False, "error": "asr backend is not whisper"}, 409)
+            t0 = time.perf_counter()
+            try:
+                text = robot.asr.transcribe(audio)
+            except OSError:
+                return self._json({"ok": False, "error": "Whisper 服務沒有回應"}, 503)
+            ms = round((time.perf_counter() - t0) * 1000)
+            if not text:
+                return self._json({"ok": True, "robot": robot.id, "text": "", "ms": ms})
+            with runner.lock:
+                rid, heard = runner.sim.hear(text, robot.id)
+            return self._json({"ok": True, "robot": rid, "text": heard, "ms": ms})
+
         def do_POST(self):
+            url = urlparse(self.path)
+            if url.path == "/api/voice":
+                return self._voice(parse_qs(url.query).get("robot", ["S1"])[0])
             data = self._body()
             if self.path == "/api/command":
                 text = (data.get("text") or "").strip()
@@ -150,6 +175,7 @@ def make_handler(runner):
 
 
 def serve(cfg, host="127.0.0.1", port=8780):
+    start_service(cfg.get("asr", {}))
     runner = Runner(cfg)
     httpd = ThreadingHTTPServer((host, port), make_handler(runner))
     print(f"清潔機器人調度模擬器：http://{host}:{port}")

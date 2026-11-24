@@ -111,6 +111,7 @@ i.dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; ma
 .bubble.robot { align-self: flex-start; background: #263142; border-bottom-left-radius: 3px; }
 .bubble .meta { display: block; font-size: 10.5px; color: #9fb0c6; margin-bottom: 1px; }
 #mic.listening { background: #a8323e; border-color: #d4434f; }
+#mic.busy { opacity: .6; cursor: progress; }
 #mic:disabled { opacity: .4; cursor: not-allowed; }
 .cmd-row { display: flex; gap: 6px; }
 .cmd-row input { flex: 1; min-width: 0; }

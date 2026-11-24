@@ -7,14 +7,15 @@ latency_ticks = 1        # 機器人 ↔ 中控台的通訊延遲
 scenario = "default"     # default：預設賣場情境；empty：空場地
 
 [planner]                # 中控台上的任務規劃器（LLM）
-backend = "rule"         # rule：關鍵字規則（不需模型）；ollama：本地 LLM
+backend = "ollama"       # ollama：本地 LLM（Ollama 沒開時自動改用規則）；rule：關鍵字規則（不需模型）
 model = "gemma3:4b"      # backend = "ollama" 時使用，例如 gemma3:4b、gemma3:12b、llama3.1:8b、phi4-mini
 url = "http://localhost:11434"
 timeout = 60
 
 [asr]                    # 每台機器人機上的語音轉文字
-backend = "text"         # text：儀表板輸入的句子當成收音結果；whisper：faster-whisper
-model = "small"
+backend = "whisper"      # whisper：儀表板 🎤 錄音交給本機 Whisper（.venv-asr，自動啟動）；text：只用打字或瀏覽器辨識
+model = "mlx-community/whisper-large-v3-turbo"   # 或 mlx-community/whisper-small-mlx（較快、較不準）
+url = "http://127.0.0.1:8791"
 
 [detector]               # 每台機器人鏡頭上的髒污偵測
 backend = "sim"          # sim：模擬偵測（遠距會誤判）；yolo：載入權重（需要實際影像）

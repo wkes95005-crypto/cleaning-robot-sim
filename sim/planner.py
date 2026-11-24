@@ -94,16 +94,57 @@ class RulePlanner:
 SYSTEM_PROMPT = """你是賣場清潔機器人中控台的任務規劃器。使用者是對其中一台機器人說話（heard_by，角色 heard_by_role），
 把指令轉成 JSON，不要輸出其他文字。
 格式：{"steps":[...],"parallel":false,"who":"self"}
-who：指令是對這台機器人說的用 "self"；說「全部、大家、所有機器人」時用 "all"。
+who：指令是對這台機器人說的用 "self"；說「全部、大家、所有人、所有機器人」時用 "all"。
 可用動作：
-- {"action":"clean_zone","zone":<區域>,"mode":"sweep"|"mop"|"sweep_then_mop"}  掃地、拖地或先掃後拖
-- {"action":"avoid","object":"cable"|"box"|"cart"|"pallet"}  之後都要避開這類物體
-- {"action":"clear_obstacles","zone":<區域或 null>}  派機械手臂機器人把紙箱、推車等障礙物搬到倉儲區（電線不能搬，只會繞開）
-- {"action":"dock"}  回充電站待命
+- {"action":"clean_zone","zone":<區域或 null>,"mode":"sweep"|"mop"|"sweep_then_mop"}
+  乾的垃圾（紙屑、灰塵、碎片）用 sweep；液體（水、濕、灑出來）用 mop；
+  液體混著固體（打翻飲料連同杯子或玻璃、黏黏的）或只說「清理、打掃、處理」時用 sweep_then_mop。
+- {"action":"avoid","object":"cable"|"box"|"cart"|"pallet"}  之後都要避開這類物體（延長線也是 cable）
+- {"action":"clear_obstacles","zone":<區域或 null>}  派機械手臂機器人把紙箱、推車、棧板搬到倉儲區（電線不能搬，只會繞開）
+- {"action":"dock"}  回充電站待命（收工、沒電、回去休息）
 - {"action":"stop"}  停下來，原地待命
 - {"action":"resume"}  恢復工作
-區域只能用：%s。指令沒說區域時 zone 用 null，系統會改用聽到指令那台機器人所在的區域。
-steps 依指令的先後順序排列；只有使用者說「同時」時 parallel 才是 true。"""
+區域只能用：%s。「收銀台」就是收銀區。
+指令沒明確說區域（例如「這邊、這裡、那邊」）時 zone 一定用 null，系統會改用聽到指令那台機器人所在的區域，不要自己猜。
+只輸出指令真正要求的動作，不要自己加 stop 或 avoid。steps 依指令的先後順序排列；只有使用者說「同時、一起」時 parallel 才是 true。"""
+
+# A few worked examples make small models follow the format and the zone/mode rules much better.
+EXAMPLES = [
+    ("這裡有人打翻飲料，處理一下", {"steps": [{"action": "clean_zone", "zone": None, "mode": "sweep_then_mop"}],
+                                   "parallel": False, "who": "self"}),
+    ("貨架A區地上有很多灰塵", {"steps": [{"action": "clean_zone", "zone": "貨架A區", "mode": "sweep"}],
+                              "parallel": False, "who": "self"}),
+    ("小心地上的電線，然後去拖入口", {"steps": [{"action": "avoid", "object": "cable"},
+                                               {"action": "clean_zone", "zone": "入口", "mode": "mop"}],
+                                     "parallel": False, "who": "self"}),
+    ("所有機器人先停一下", {"steps": [{"action": "stop"}], "parallel": False, "who": "all"}),
+    ("先清潔冷凍區，再把促銷區跟收銀區一起掃一掃",
+     {"steps": [{"action": "clean_zone", "zone": "冷凍區", "mode": "sweep_then_mop"},
+                {"action": "clean_zone", "zone": "促銷區", "mode": "sweep"},
+                {"action": "clean_zone", "zone": "收銀區", "mode": "sweep"}], "parallel": True, "who": "self"}),
+]
+
+
+def plan_schema():
+    """JSON schema handed to Ollama's structured output, so the model can only produce valid plans."""
+    return {
+        "type": "object",
+        "properties": {
+            "steps": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": sorted(ACTIONS)},
+                    "zone": {"type": ["string", "null"], "enum": [*ZONES, None]},
+                    "mode": {"type": "string", "enum": sorted(MODES)},
+                    "object": {"type": "string", "enum": sorted(OBSTACLE_KINDS)},
+                },
+                "required": ["action"],
+            }},
+            "parallel": {"type": "boolean"},
+            "who": {"type": "string", "enum": ["self", "all"]},
+        },
+        "required": ["steps", "parallel", "who"],
+    }
 
 
 class OllamaPlanner:
@@ -117,15 +158,19 @@ class OllamaPlanner:
         self.fallback = RulePlanner()
 
     def plan(self, text, context=None):
+        def ask(command):
+            return {"role": "user", "content": json.dumps({"command": command, **(context or {})}, ensure_ascii=False)}
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT % "、".join(ZONES)}]
+        for command, answer in EXAMPLES:
+            messages += [ask(command), {"role": "assistant", "content": json.dumps(answer, ensure_ascii=False)}]
         body = {
             "model": self.model,
             "stream": False,
-            "format": "json",
+            "format": plan_schema(),
+            "keep_alive": "30m",  # stay loaded between commands so each reply takes ~1 s, not a reload
             "options": {"temperature": 0},
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT % "、".join(ZONES)},
-                {"role": "user", "content": json.dumps({"command": text, **(context or {})}, ensure_ascii=False)},
-            ],
+            "messages": messages + [ask(text)],
         }
         req = urllib.request.Request(f"{self.url}/api/chat", data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})

@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv-yolo/
+.venv-asr/
 
 # YOLO: dataset and training runs are regenerated (see README); the trained weights are kept
 webots/dataset/

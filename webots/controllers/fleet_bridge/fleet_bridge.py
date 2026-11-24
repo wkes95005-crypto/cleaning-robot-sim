@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from controller import Supervisor  # noqa: E402
 from layout import FRAMES_DIR, ROOT, OBSTACLE_LOOK, cell_to_xy, dirt_node, obstacle_node, parse_dirt_def  # noqa: E402
 from run import load_config  # noqa: E402
+from sim.asr import exit_on_sigterm, start_service  # noqa: E402
 from sim.engine import Simulation  # noqa: E402
 from sim.server import make_handler  # noqa: E402
 
@@ -50,6 +51,7 @@ class Bridge:
 
 
 cfg = load_config(os.path.join(ROOT, "config.toml"))
+start_service(cfg.get("asr", {}))  # local Whisper for the dashboard microphone, if configured
 bridge = Bridge(cfg)
 server = ThreadingHTTPServer(("127.0.0.1", PORT), make_handler(bridge))
 threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -62,6 +64,7 @@ if os.path.exists(yolo_py) and os.path.exists(os.path.join(ROOT, "weights", "dir
     yolo = subprocess.Popen([yolo_py, os.path.join(ROOT, "webots", "yolo_worker.py")],
                             env={**os.environ, "CLEANSIM_FRAMES": bridge.frames_dir})
     atexit.register(yolo.terminate)
+    exit_on_sigterm()
     print("[fleet] YOLO dirt detector started")
 else:
     print("[fleet] no YOLO weights yet: run dataset_maker and webots/train_yolo.py to enable detection boxes")
