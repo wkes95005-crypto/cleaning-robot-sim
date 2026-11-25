@@ -11,7 +11,8 @@ const STATE_LABEL = { idle: "待命", moving: "移動中", waiting: "讓行等�
                       grasping: "夾取中", placing: "放置中", charging: "充電中" };
 const KIND_LABEL = { sweep: "掃地", mop: "拖地", patrol: "巡邏", clear: "搬移" };
 const LOG_CATS = { map: "建圖", voice: "語音", llm: "LLM", dispatch: "派工", vision: "辨識", obstacle: "障礙",
-                   energy: "電量", conflict: "衝突", clean: "清潔" };
+                   energy: "電量", conflict: "衝突", clean: "清潔",
+                   env: "環境" };
 const PRESETS = {
   sweeper: ["去掃貨架A區", "這裡有人打翻飲料，處理一下", "先清理生鮮區，避開地上的電線，最後再掃收銀區"],
   mopper: ["入口地板濕了，拖一下", "去拖收銀區", "促銷區和入口同時拖地"],
@@ -88,6 +89,8 @@ async function init() {
   document.getElementById("cmd-send").onclick = sendCommand;
   document.getElementById("cmd-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) sendCommand(); });
   document.getElementById("btn-pause").onclick = () => api("/api/control", { action: STATE && STATE.paused ? "resume" : "pause" });
+  document.getElementById("events-on").onchange = (e) => api("/api/control", { action: "events", on: e.target.checked });
+  document.getElementById("btn-event").onclick = () => api("/api/control", { action: "events", fire: true });
   document.getElementById("btn-step").onclick = () => api("/api/control", { action: "step" });
   document.getElementById("btn-reset").onclick = () => { lastLogKey = ""; api("/api/control", { action: "reset" }); };
   const speed = document.getElementById("speed");
@@ -804,6 +807,8 @@ function render() {
     `<span>規劃器 ${s.backends.planner}</span><span>ASR ${s.backends.asr}</span><span>偵測 ${s.backends.detector}</span>`;
   document.getElementById("btn-pause").textContent = s.paused ? "繼續" : "暫停";
   document.getElementById("btn-remap").hidden = s.map.phase === "given";
+  const ev = document.getElementById("events-on");
+  if (document.activeElement !== ev) ev.checked = !!(s.stats.events && s.stats.events.on);
   renderMapStatus(s);
   const st = s.stats;
   document.getElementById("stats").innerHTML =

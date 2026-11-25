@@ -6,6 +6,7 @@ import os
 from .asr import make_asr
 from .bus import Bus
 from .console import Console
+from .events import RandomEvents
 from .perception import make_detector
 from .planner import make_planner
 from .robots import ROLE_LABEL
@@ -42,6 +43,7 @@ class Simulation:
         for i, spec in enumerate(fleet):
             self.robots.append(Robot(self, spec["id"], spec["role"], self.world.docks[i], spec["battery"],
                                      asr, detector, patience=max(2, 2 * (len(fleet) - i))))
+        self.events = RandomEvents(self, self.cfg.get("events", {}))  # litter and spills while open
         self.occupied = {r.pos for r in self.robots}
         self.reserved = set()
         self.collisions = 0
@@ -65,6 +67,7 @@ class Simulation:
     def step(self):
         self.tick += 1
         self.bus.tick = self.tick
+        self.events.step()
         self.console.step()
         self.reserved = set()
         for r in self.robots:
@@ -141,5 +144,6 @@ class Simulation:
             "held": sorted(c.held), "avoid": sorted(c.avoid_kinds), "thinking": len(c._plans),
             "map": c.map_view(),
             "stats": {**c.stats, "dirt_left": len(w.dirt), "dirt_known": len(c.known_dirt),
-                      "collisions": self.collisions, "messages": self.bus.sent},
+                      "collisions": self.collisions,
+                      "events": {"on": self.events.enabled, "count": self.events.count}, "messages": self.bus.sent},
         }

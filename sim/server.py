@@ -184,6 +184,11 @@ def make_handler(runner):
                     runner.reset()
                 elif action == "remap":  # survey again from an empty map
                     runner.reset(remap=True)
+                elif action == "events":  # random litter / spills / obstacles on or off; "fire" = one now
+                    with runner.lock:
+                        if data.get("fire"):
+                            return self._json({"ok": True, "event": runner.sim.events.fire()})
+                        runner.sim.events.enabled = bool(data.get("on"))
                 return self._json({"ok": True, "paused": runner.paused, "tps": runner.tps})
             return self._json({"ok": False, "error": "not found"}, 404)
 

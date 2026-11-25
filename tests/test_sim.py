@@ -163,6 +163,39 @@ class AddressedCommandTest(unittest.TestCase):
         self.assertTrue(any("液體殘留" in t for t in texts))
 
 
+
+class RandomEventsTest(unittest.TestCase):
+    """[events]: litter, spills and obstacles appear while the store is open; robots must find them."""
+
+    def test_events_appear_and_get_cleaned(self):
+        sim = Simulation({"events": {"enabled": True, "mean_interval_s": 5, "max_obstacles": 3}})
+        w = sim.world
+        start_dirt = set(w.dirt)
+        floor = sum(1 for x in range(48) for y in range(32) if w.is_floor((x, y)))
+        spawned = set()
+        for _ in range(600):
+            before = set(w.dirt)
+            sim.step()
+            spawned |= set(w.dirt) - before
+            loose = {c for c, oid in w.obstacle_cells.items() if not w.obstacles[oid].stored}
+            self.assertFalse({r.pos for r in sim.robots} & loose, "spawned on a robot")
+        self.assertGreater(sim.events.count, 5)
+        self.assertLessEqual(sum(1 for o in w.obstacles.values() if o.cell and not o.stored), 3 + 4)
+        self.assertTrue(any(e["cat"] == "env" for e in sim.console.log))
+        cleaned = spawned - set(w.dirt) - start_dirt
+        self.assertGreater(len(cleaned), len(spawned) // 3, "robots should find and clean new dirt")
+        self.assertEqual(sim.collisions, 0)
+
+    def test_off_by_default_and_paused_while_mapping(self):
+        self.assertFalse(Simulation().events.enabled)
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            sim = Simulation({"events": {"enabled": True, "mean_interval_s": 1},
+                              "mapping": {"mode": "explore", "file": f"{d}/m.json"}})
+            for _ in range(20):
+                sim.step()
+            self.assertEqual(sim.events.count, 0)
+
 if __name__ == "__main__":
     unittest.main()
 

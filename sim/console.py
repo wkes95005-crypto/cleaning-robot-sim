@@ -205,8 +205,8 @@ class Console:
 
     def _on_dirt_detected(self, rid, cell, label, conf, near):
         cell = tuple(cell)
-        if self.map.is_occupied(cell):
-            return  # projected onto a wall or shelf: a bad placement, not dirt anyone can reach
+        if not self.sim.world.in_bounds(cell) or self.map.is_occupied(cell):
+            return  # projected off the map or onto a wall or shelf: a bad placement, not reachable dirt
         if not near and self.tick < self.checked_clean.get(cell, -1):
             return  # someone looked here up close and it was clean: don't chase far-away false alarms
         old = self.known_dirt.get(cell)
