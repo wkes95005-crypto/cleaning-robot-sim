@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from sim.engine import Simulation
@@ -195,6 +196,29 @@ class RandomEventsTest(unittest.TestCase):
             for _ in range(20):
                 sim.step()
             self.assertEqual(sim.events.count, 0)
+
+
+class CameraViewTest(unittest.TestCase):
+    """The 2D camera matches Webots: a fan ahead, blocked by shelves, plus the ring around the robot."""
+
+    def test_fan_ahead_with_line_of_sight(self):
+        from sim.perception import view_cells
+        from sim.world import World
+        w = World()
+        pos = (16, 15)  # central aisle, shelves of zone A to the west
+        north = view_cells(w, pos, -math.pi / 2)
+        self.assertIn((16, 9), north)           # 3 m straight ahead
+        self.assertNotIn((16, 21), north)       # behind
+        self.assertIn((16, 16), north)          # right next to it: near sensors
+        east = view_cells(w, pos, 0.0)
+        self.assertNotIn((16, 9), east)         # outside the fan
+        aisle = (20, 9)  # main aisle, open to the east
+        self.assertIn((26, 9), view_cells(w, aisle, 0.0))
+        w.add_obstacle((23, 9), "box")
+        self.assertNotIn((26, 9), view_cells(w, aisle, 0.0))  # hidden behind the box
+        w2 = World()
+        w2.add_obstacle((23, 9), "cable")
+        self.assertIn((26, 9), view_cells(w2, aisle, 0.0))     # a cable on the floor hides nothing
 
 if __name__ == "__main__":
     unittest.main()

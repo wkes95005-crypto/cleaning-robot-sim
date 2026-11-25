@@ -2,10 +2,12 @@
 own path with A* on the console's shared map, and talks to the console only through the bus."""
 from __future__ import annotations
 
+import math
+
 from .mapping import lidar_scan, make_rng
 from .pathfinding import astar, chebyshev, neighbors4, neighbors8
+from .perception import view_cells
 
-SENSOR_RADIUS = 3
 ROLE_LABEL = {"sweeper": "掃地機", "mopper": "拖地機", "arm": "障礙排除機"}
 DRAIN = {"move": 0.12, "work": 0.2, "idle": 0.01}  # % per tick: a full charge lasts about 7 minutes of driving
 HANDLE_TICKS = 4  # time for the arm to grasp or set down an obstacle
@@ -15,6 +17,8 @@ class Robot:
     def __init__(self, sim, rid, role, cell, battery, asr, detector, patience):
         self.sim, self.id, self.role = sim, rid, role
         self.pos = self.dock = cell
+        self.heading = -math.pi / 2  # grid frame (x east, y south): parked facing north, as in Webots
+        self.view = set()            # cells the camera saw this tick
         self.battery = float(battery)
         self.water = 100.0 if role == "mopper" else None
         self.asr, self.detector = asr, detector
@@ -96,26 +100,24 @@ class Robot:
     # ------------------------------------------------------------------ perception
     def _perceive(self):
         w = self.sim.world
-        x0, y0 = self.pos
         in_view = []
-        for dx in range(-SENSOR_RADIUS, SENSOR_RADIUS + 1):
-            for dy in range(-SENSOR_RADIUS, SENSOR_RADIUS + 1):
-                c = (x0 + dx, y0 + dy)
-                d = w.dirt.get(c)
-                if d:
-                    in_view.append(d)
-                else:
-                    self.reported_dirt.pop(c, None)
-                oid = w.obstacle_cells.get(c)
-                if oid:
-                    self.local_blocked.add(c)
-                    if (oid, c) not in self.reported_obs:
-                        self.reported_obs.add((oid, c))
-                        o = w.obstacles[oid]
-                        self.send("obstacle_detected", oid=oid, cell=c, kind=o.kind,
-                                  movable=o.movable, stored=o.stored)
-                else:
-                    self.local_blocked.discard(c)
+        self.view = view_cells(w, self.pos, self.heading)
+        for c in self.view:
+            d = w.dirt.get(c)
+            if d:
+                in_view.append(d)
+            else:
+                self.reported_dirt.pop(c, None)
+            oid = w.obstacle_cells.get(c)
+            if oid:
+                self.local_blocked.add(c)
+                if (oid, c) not in self.reported_obs:
+                    self.reported_obs.add((oid, c))
+                    o = w.obstacles[oid]
+                    self.send("obstacle_detected", oid=oid, cell=c, kind=o.kind,
+                              movable=o.movable, stored=o.stored)
+            else:
+                self.local_blocked.discard(c)
         if self.sim.detect_source:  # Webots: YOLO on this robot's real camera frames
             detections = self.sim.detect_source(self) or []
         else:                       # 2D simulation: SimDetector reads the dirt in view
@@ -199,7 +201,9 @@ class Robot:
                 self._unreachable()
                 return
         nxt = self.path[0]
+        here = self.pos
         if self.sim.try_move(self, nxt):
+            self.heading = math.atan2(nxt[1] - here[1], nxt[0] - here[0])
             self.path.pop(0)
             self.wait = 0
             self.odometer += 1

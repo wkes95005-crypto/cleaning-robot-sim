@@ -48,6 +48,51 @@ class SimDetector:
 CAMERA = {"x": 0.165, "z": 0.12, "pitch": 0.22, "fov": 1.2}
 
 
+# What a robot's camera can see on the 2D grid, matched to the Webots camera: a fan straight ahead
+# (the camera's horizontal field of view) out to the distance YOLO detections are trusted from, blocked
+# by walls, shelves and obstacles. Right next to the robot (one cell) it always knows what is there:
+# the camera can't see below its own bumper, but bumper and floor sensors can.
+VIEW_FOV = CAMERA["fov"]  # radians
+VIEW_RANGE = 8            # cells (4 m), same as yolo_detections(max_dist=4.0)
+LOW_KINDS = {"cable"}     # lies flat on the floor: doesn't hide what is behind it
+
+
+def view_cells(world, pos, heading):
+    """Cells the robot standing on `pos`, facing `heading` (grid frame: radians, x east, y south),
+    can see: the camera fan with line of sight, plus the eight cells around it."""
+    x0, y0 = pos
+    seen = {pos} | {(x0 + dx, y0 + dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if world.in_bounds((x0 + dx, y0 + dy))}
+    for dx in range(-VIEW_RANGE, VIEW_RANGE + 1):
+        for dy in range(-VIEW_RANGE, VIEW_RANGE + 1):
+            dist = math.hypot(dx, dy)
+            if dist > VIEW_RANGE + 0.5 or (dx, dy) == (0, 0):
+                continue
+            off = (math.atan2(dy, dx) - heading + math.pi) % (2 * math.pi) - math.pi
+            if abs(off) > VIEW_FOV / 2:
+                continue
+            c = (x0 + dx, y0 + dy)
+            if world.in_bounds(c) and _line_of_sight(world, pos, c, dist):
+                seen.add(c)
+    return seen
+
+
+def _line_of_sight(world, a, b, dist):
+    """Nothing tall between the centres of cells a and b (b itself may be the wall or box in view)."""
+    steps = max(1, int(dist * 4))
+    for k in range(1, steps):
+        c = (int(math.floor(a[0] + 0.5 + (b[0] - a[0]) * k / steps)),
+             int(math.floor(a[1] + 0.5 + (b[1] - a[1]) * k / steps)))
+        if c in (a, b):
+            continue
+        if c in world.walls:
+            return False
+        oid = world.obstacle_cells.get(c)
+        if oid is not None and world.obstacles[oid].kind not in LOW_KINDS:
+            return False
+    return True
+
+
 def pixel_to_floor(u, v, width, height, pose, cam=CAMERA):
     """Where the camera ray through pixel (u, v) meets the floor, in world metres, or None (at/above
     the horizon). `pose` is the robot's (x, y, yaw) when the frame was taken; the camera looks along

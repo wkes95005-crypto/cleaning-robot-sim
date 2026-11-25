@@ -125,7 +125,7 @@ class Simulation:
                 "state": r.state, "mode": r.mode, "task": r.task["id"] if r.task else None,
                 "carrying": r.carrying.kind if r.carrying else None, "path": r.path[:40],
                 "scan": [[round(x, 1), round(y, 1)] for x, y in r.scan_ends[::2]] if self.lidar else [],
-                "dock": r.dock, "odometer_m": r.odometer * CELL_M, "held": r.id in c.held,
+                "dock": r.dock, "heading": round(r.heading, 3), "view": sorted(r.view), "odometer_m": r.odometer * CELL_M, "held": r.id in c.held,
             } for r in self.robots],
             "dirt": [{"x": d.cell[0], "y": d.cell[1], "kind": d.kind,
                       "known": c.known_dirt.get(d.cell, {}).get("label")} for d in w.dirt.values()],

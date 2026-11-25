@@ -713,8 +713,7 @@ function drawState() {
       ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(cx, cy, 12, 0, Math.PI * 2); ctx.stroke();
     }
-    ctx.fillStyle = "rgba(255,255,255,0.04)";
-    ctx.fillRect((rx - 3) * CS, (ry - 3) * CS, 7 * CS, 7 * CS); // camera field of view
+    if (document.getElementById("show-view").checked) drawView(r, cx, cy);
     ctx.fillStyle = ROLE_COLOR[r.role];
     ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = r.battery < 25 ? "#ff5d5d" : "#0b0f14";
@@ -797,6 +796,19 @@ function renderTalk() {
 
 function escapeHtml(s) {
   return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
+
+// Camera view: the cells the robot saw this tick (fan ahead, cut off by shelves and boxes), plus the
+// fan's outline from where the robot is drawn right now.
+const VIEW_FOV = 1.2, VIEW_RANGE = 8;
+function drawView(r, cx, cy) {
+  ctx.fillStyle = ROLE_COLOR[r.role]; ctx.globalAlpha = 0.09;
+  for (const [x, y] of r.view) ctx.fillRect(x * CS, y * CS, CS, CS);
+  ctx.globalAlpha = 0.35; ctx.strokeStyle = ROLE_COLOR[r.role]; ctx.lineWidth = 1;
+  const R = (VIEW_RANGE + 0.5) * CS;
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, R, r.heading - VIEW_FOV / 2, r.heading + VIEW_FOV / 2); ctx.closePath(); ctx.stroke();
+  ctx.globalAlpha = 1;
 }
 
 function render() {
