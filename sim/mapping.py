@@ -58,6 +58,43 @@ def lidar_scan(world, pos, rng):
     return free - hits, hits, ends
 
 
+def scan_from_ranges(x, y, yaw, ranges, fov, max_range, cell_m=0.5, width=W, height=H, dynamic=None):
+    """A real lidar sweep (Webots) -> (free cells, hit cells, ray end points in grid units).
+
+    (x, y, yaw) is the sensor pose in world metres (x east, y north, yaw counter-clockwise from east).
+    `ranges` go from the left-most slice (+fov/2) clockwise, as Webots' range image does; -1 or a value
+    at max range means no return. The grid's y axis points south, so it is flipped here.
+    `dynamic(px, py)` says whether a return (world metres) is on a moving thing, such as another robot:
+    the beam still shows free floor up to it, but the map gets no wall there.
+    """
+    gx, gy = x / cell_m + width / 2, height / 2 - y / cell_m
+    n = len(ranges)
+    free, hits, ends = set(), set(), []
+    for i, r in enumerate(ranges):
+        a = yaw + fov / 2 - (i + 0.5) * fov / n  # each beam points at the centre of its slice
+        dx, dy = math.cos(a), -math.sin(a)
+        hit = 0 < r < max_range
+        if hit and dynamic and dynamic(x + r * math.cos(a), y + r * math.sin(a)):
+            hit = False
+            length = r / cell_m
+        else:
+            length = (r if hit else max_range) / cell_m
+        steps = int((length - 0.3) * 4)  # stop short of the return, and of max range (noise at the limit)
+        for k in range(1, steps + 1):  # every quarter cell, stopping short of the return (range noise)
+            c = (int(math.floor(gx + dx * k / 4)), int(math.floor(gy + dy * k / 4)))
+            if 0 <= c[0] < width and 0 <= c[1] < height:
+                free.add(c)
+        ex, ey = gx + dx * length, gy + dy * length
+        if hit:  # the return lies on the obstacle's surface: step a little into it along the beam
+            c = (int(math.floor(ex + dx * 0.15)), int(math.floor(ey + dy * 0.15)))
+            if 0 <= c[0] < width and 0 <= c[1] < height:
+                hits.add(c)
+        ends.append((ex, ey))
+    # Each beam counts on its own: a cell that one beam (wrongly) calls a wall while others pass through
+    # it gets both updates, so the log-odds can still settle on "floor".
+    return free, hits, ends
+
+
 class OccupancyMap:
     """The console's map, shared by every robot: log-odds per cell, unknown until scanned."""
 
@@ -104,11 +141,30 @@ class OccupancyMap:
         return m
 
     # ------------------------------------------------------------------ frontiers
-    def frontiers(self):
-        """Free cells next to unknown space, grouped 8-connected into clusters (largest first)."""
+    def frontiers(self, min_unknown=3):
+        """Free cells next to unknown space, grouped 8-connected into clusters (largest first).
+
+        Unknown patches smaller than `min_unknown` cells don't count: with a real, noisy lidar a single
+        cell next to a wall now and then drifts back to "unknown", and chasing those would never end.
+        """
+        unknown = {(x, y) for y in range(H) for x in range(W) if abs(self.l[y][x]) < OCC}
+        open_space = set()  # unknown cells in patches big enough to be worth exploring
+        seen = set()
+        for start in unknown:
+            if start in seen:
+                continue
+            patch, todo = [start], [start]
+            seen.add(start)
+            while todo:
+                for n in neighbors4(todo.pop()):
+                    if n in unknown and n not in seen:
+                        seen.add(n)
+                        patch.append(n)
+                        todo.append(n)
+            if len(patch) >= min_unknown:
+                open_space.update(patch)
         cells = {(x, y) for y in range(H) for x in range(W)
-                 if self.l[y][x] <= FREE and any(0 <= n[0] < W and 0 <= n[1] < H and not self.known(n)
-                                                 for n in neighbors4((x, y)))}
+                 if self.l[y][x] <= FREE and any(n in open_space for n in neighbors4((x, y)))}
         groups = []
         while cells:
             seed = cells.pop()

@@ -115,7 +115,8 @@ def build(console, dataset=False):
         parts.append(f'DEF {rid} CleaningRobot {{ translation {x:.3f} {y:.3f} 0 rotation 0 0 1 1.5708 '
                      f'name "{rid}" controller "{ctrl}" controllerArgs [ "{rid}" ] color {color} }}\n')
     if console:
-        parts.append('DEF FLEET Robot { name "fleet console" controller "fleet_bridge" supervisor TRUE }\n')
+        parts.append('DEF FLEET Robot { name "fleet console" controller "fleet_bridge" supervisor TRUE '
+                     'children [ Receiver { name "lidar receiver" channel 7 } ] }\n')
 
     out = os.path.join(WORLDS, "dirt_dataset.wbt" if dataset else
                        "supermarket_console.wbt" if console else "supermarket.wbt")

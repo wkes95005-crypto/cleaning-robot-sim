@@ -239,3 +239,46 @@ class MappingTest(unittest.TestCase):
         run(sim, 400)
         self.assertNotIn((21, 16), sim.world.obstacle_cells)
         self.assertFalse(sim.console.map.is_occupied((21, 16)))
+
+
+class RealLidarTest(unittest.TestCase):
+    """scan_from_ranges turns a Webots range image + pose into map cells."""
+
+    def sweep(self, cell, yaw, noise=0.0, seed=0):
+        import math
+        import random
+        from sim.world import CELL_M
+        w = World()
+        rng = random.Random(seed)
+        gx, gy = cell[0] + 0.5, cell[1] + 0.5
+        n, fov, ranges = 180, 2 * math.pi, []
+        for i in range(n):  # ray-march the true walls, beams at slice centres like Webots
+            a = yaw + fov / 2 - (i + 0.5) * fov / n
+            dx, dy, r = math.cos(a), -math.sin(a), -1
+            for k in range(1, 8 * 64):
+                if (math.floor(gx + dx * k / 64), math.floor(gy + dy * k / 64)) in w.walls:
+                    r = k / 64 * CELL_M + rng.gauss(0, noise)
+                    break
+            ranges.append(r if 0 < r < 4 else -1)
+        x, y = (gx - 24) * CELL_M, (16 - gy) * CELL_M
+        return w, (x, y, yaw, ranges, fov, 4.0)
+
+    def test_walls_and_floor_land_in_the_right_cells(self):
+        from sim.mapping import OccupancyMap, scan_from_ranges
+        m = OccupancyMap()
+        for k, (cell, yaw) in enumerate([((16, 15), 0.3), ((10, 22), 2.0), ((30, 9), -1.2), ((40, 26), 0.9)]):
+            w, args = self.sweep(cell, yaw, noise=0.02, seed=k)
+            free, hits, _ = scan_from_ranges(*args)
+            self.assertFalse(free & w.walls)
+            m.update(free, hits)
+        self.assertFalse([c for c in w.walls if m.is_free(c)])
+        self.assertFalse([(x, y) for x in range(48) for y in range(32) if m.is_occupied((x, y)) and (x, y) not in w.walls])
+
+    def test_returns_on_other_robots_are_not_walls(self):
+        from sim.mapping import scan_from_ranges
+        w, args = self.sweep((16, 15), 0.0)
+        ranges = list(args[3])
+        ranges[0] = 0.6  # something 0.6 m away along the first beam
+        x, y, yaw = args[0], args[1], args[2]
+        free, hits, _ = scan_from_ranges(x, y, yaw, ranges, args[4], args[5], dynamic=lambda px, py: True)
+        self.assertFalse(hits)  # every return was "on a robot": free space only

@@ -210,4 +210,4 @@ DEF A1 CleaningRobot { translation -10.750 -7.250 0 rotation 0 0 1 1.5708 name "
 DEF M1 CleaningRobot { translation -9.750 -7.250 0 rotation 0 0 1 1.5708 name "M1" controller "camera_feed" controllerArgs [ "M1" ] color 0.31 0.55 1.0 }
 DEF S1 CleaningRobot { translation -8.750 -7.250 0 rotation 0 0 1 1.5708 name "S1" controller "camera_feed" controllerArgs [ "S1" ] color 0.24 0.81 0.56 }
 DEF S2 CleaningRobot { translation -7.750 -7.250 0 rotation 0 0 1 1.5708 name "S2" controller "camera_feed" controllerArgs [ "S2" ] color 0.24 0.81 0.56 }
-DEF FLEET Robot { name "fleet console" controller "fleet_bridge" supervisor TRUE }
+DEF FLEET Robot { name "fleet console" controller "fleet_bridge" supervisor TRUE children [ Receiver { name "lidar receiver" channel 7 } ] }

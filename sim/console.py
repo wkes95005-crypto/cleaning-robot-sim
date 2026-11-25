@@ -680,7 +680,8 @@ class Console:
     def _explore(self):
         if self.tick % 2:
             return
-        groups = self.map.frontiers()
+        # a real lidar (Webots) is noisy: single cells by walls flicker to "unknown", so skip tiny patches
+        groups = self.map.frontiers(min_unknown=3 if self.sim.scan_source else 1)
         self.frontier_cells = [c for g in groups for c in g]
         self._report_progress()
         targets = []  # (target cell, cluster size)

@@ -41,6 +41,7 @@ button {
 }
 button:hover { background: #2d3d59; }
 button.primary { background: #1f6fd1; border-color: #2b80e8; }
+button.danger { background: #a8323e; border-color: #d4434f; }
 input[type=text], input:not([type]), select {
   background: #0f1620; color: var(--text); border: 1px solid #33445f; border-radius: 6px;
   padding: 6px 8px; font: inherit;

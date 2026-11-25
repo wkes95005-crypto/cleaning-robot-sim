@@ -96,8 +96,21 @@ async function init() {
     api("/api/control", { action: "speed", value: Number(speed.value) });
   };
   setupMapMouse();
-  document.getElementById("btn-remap").onclick = () => {
-    if (!confirm("清空地圖，讓機器人從頭探索建圖？已存的地圖會被新地圖取代。")) return;
+  // Two clicks instead of confirm(): embedded browsers often suppress dialogs, which silently cancels.
+  const remap = document.getElementById("btn-remap");
+  let armed = null;
+  remap.onclick = () => {
+    if (!armed) {
+      remap.textContent = "再按一次確認";
+      remap.classList.add("danger");
+      remap.title = "會清空目前的地圖，讓機器人從頭探索；已存的地圖會被新地圖取代";
+      armed = setTimeout(() => { armed = null; remap.textContent = "重新建圖"; remap.classList.remove("danger"); }, 3000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    remap.textContent = "重新建圖";
+    remap.classList.remove("danger");
     lastLogKey = "";
     api("/api/control", { action: "remap" });
   };

@@ -50,6 +50,7 @@ class Simulation:
         mcfg = self.cfg.get("mapping", {})
         mode = mcfg.get("mode", "given")
         self.lidar = mode != "given"
+        self.scan_source = None  # set by the Webots bridge: robot -> (free, hits, ends) from the 3D lidar
         map_file = os.path.join(ROOT, mcfg.get("file", "maps/supermarket.json"))
         manual = mcfg.get("manual_zones", [])
         if mode == "auto" and os.path.exists(map_file) and not remap:

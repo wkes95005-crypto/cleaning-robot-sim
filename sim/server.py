@@ -45,6 +45,11 @@ def make_handler(runner):
         def log_message(self, *args):
             pass
 
+        def end_headers(self):
+            if not self.path.startswith("/api/"):  # dashboard files: always check for a newer version
+                self.send_header("Cache-Control", "no-cache")
+            super().end_headers()
+
         def _json(self, obj, code=200):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)

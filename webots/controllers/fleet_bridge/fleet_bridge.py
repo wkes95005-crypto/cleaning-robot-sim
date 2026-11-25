@@ -12,6 +12,7 @@ Environment variables (optional): CLEANSIM_PORT, CLEANSIM_SNAP_DIR (save the 3D 
 CLEANSIM_QUIT_AT (quit after N simulated seconds).
 """
 import atexit
+import json
 import math
 import os
 import subprocess
@@ -26,6 +27,7 @@ from layout import FRAMES_DIR, ROOT, OBSTACLE_LOOK, cell_to_xy, dirt_node, obsta
 from run import load_config  # noqa: E402
 from sim.asr import exit_on_sigterm, start_service  # noqa: E402
 from sim.engine import Simulation  # noqa: E402
+from sim.mapping import scan_from_ranges  # noqa: E402
 from sim.server import make_handler  # noqa: E402
 
 PORT = int(os.environ.get("CLEANSIM_PORT", "8781"))
@@ -73,6 +75,37 @@ sup = Supervisor()
 dt = int(sup.getBasicTimeStep())
 root = sup.getRoot().getField("children")
 
+# Lidar sweeps radioed by the robots (camera_feed): the map is built from the real 3D lidar here
+receiver = sup.getDevice("lidar receiver")
+receiver.enable(dt)
+latest_scan = {}  # robot id -> newest sweep not yet used
+pose_log = {}     # robot id -> [(time, x, y, heading)] as this supervisor placed it, last ~2 s
+LIDAR_DEBUG = os.environ.get("CLEANSIM_LIDAR_LOG")  # write raw sweeps + true poses here for analysis
+debug_out = open(LIDAR_DEBUG, "w") if LIDAR_DEBUG else None
+
+
+def receive_scans():
+    while receiver.getQueueLength() > 0:
+        msg = json.loads(receiver.getString())
+        receiver.nextPacket()
+        latest_scan[msg["id"]] = msg
+        if debug_out:
+            debug_out.write(json.dumps({"msg": msg, "poses": {k: v[-40:] for k, v in pose_log.items()}}) + "\n")
+
+
+def scan_source(robot):
+    """The robot's own sweep and GPS/compass pose -> map cells. Returns that land on another robot are
+    not walls: the console knows where every robot is and filters them out."""
+    m = latest_scan.pop(robot.id, None)
+    if m is None:
+        return None
+    others = [log[-1] for rid, log in pose_log.items() if rid != robot.id and log]
+
+    def on_robot(px, py):
+        return any((px - o[1]) ** 2 + (py - o[2]) ** 2 < 0.3 ** 2 for o in others)
+
+    return scan_from_ranges(m["x"], m["y"], m["yaw"], m["ranges"], m["fov"], m["max"], dynamic=on_robot)
+
 
 def scene_dirt():
     out = {}
@@ -111,8 +144,10 @@ current, prev, heading, last_tick, last_sync = None, {}, {}, 0.0, 0.0
 next_snap = 2.0
 while sup.step(dt) != -1:
     t = sup.getTime()
+    receive_scans()
     with bridge.lock:
         sim = bridge.sim
+        sim.scan_source = scan_source
         if sim is not current:  # first run or dashboard reset
             current, last_tick = sim, t
             prev = {r.id: r.pos for r in sim.robots}
@@ -134,6 +169,9 @@ while sup.step(dt) != -1:
                 heading[r.id] = math.atan2(by - ay, bx - ax)
             x, y = ax + (bx - ax) * alpha, ay + (by - ay) * alpha
             node = sup.getFromDef(r.id)
+            log = pose_log.setdefault(r.id, [])
+            log.append((round(t, 3), round(x, 4), round(y, 4), round(heading[r.id], 4)))
+            del log[:-64]
             node.getField("translation").setSFVec3f([x, y, 0.0])
             node.getField("rotation").setSFRotation([0, 0, 1, heading[r.id]])
             node.resetPhysics()

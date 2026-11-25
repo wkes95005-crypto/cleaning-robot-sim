@@ -1,7 +1,9 @@
 #VRML_SIM R2025b utf8
 # Round differential-drive floor robot (about 34 cm across), used for the sweepers, the mopper and,
 # with a different colour, the obstacle-removal robot. GPS + compass for pose, a front camera for the
-# dirt detector and a 2D lidar for obstacle avoidance.
+# dirt detector and a 2D lidar (13 cm above the floor: it sees walls, shelves, boxes and carts, but not
+# cables on the floor or the other robots, whose bodies end at 10.5 cm). In the console world each
+# robot radios its lidar scans + GPS/compass pose to the console, which builds the shared map from them.
 
 PROTO CleaningRobot [
   field SFVec3f    translation    0 0 0
@@ -89,7 +91,9 @@ PROTO CleaningRobot [
         numberOfLayers 1
         minRange 0.18
         maxRange 4
+        noise 0.005  # 2 cm standard deviation
       }
+      Emitter { name "lidar emitter" channel 7 }
     ]
     boundingObject Group {
       children [

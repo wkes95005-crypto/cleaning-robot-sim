@@ -124,7 +124,13 @@ class Robot:
 
     def _scan(self):
         """Lidar sweep -> free and hit cells to the console, which fuses every robot's scans into one map."""
-        free, hits, self.scan_ends = lidar_scan(self.sim.world, self.pos, self._lidar_rng)
+        if self.sim.scan_source:  # Webots: the robot's real 3D lidar
+            scan = self.sim.scan_source(self)
+            if scan is None:
+                return  # no new sweep since the last tick
+            free, hits, self.scan_ends = scan
+        else:                     # 2D simulation: ray casting on the grid
+            free, hits, self.scan_ends = lidar_scan(self.sim.world, self.pos, self._lidar_rng)
         self.send("scan", free=list(free), hits=list(hits))
 
     # ------------------------------------------------------------------ goals and motion
