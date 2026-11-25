@@ -56,6 +56,7 @@ main {
 }
 .map-status.labeling { background: #2f2715; border-color: #6b5521; color: #f5dfa3; }
 .map-status b { font-variant-numeric: tabular-nums; }
+.map-status button { margin-left: auto; padding: 3px 12px; }
 .map-status .bar { flex: 1 1 160px; height: 6px; background: #0c1826; border-radius: 3px; overflow: hidden; min-width: 120px; }
 .map-status .bar > div { height: 100%; background: #4fd1e8; }
 .zone-form {

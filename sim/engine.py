@@ -50,7 +50,8 @@ class Simulation:
         mcfg = self.cfg.get("mapping", {})
         mode = mcfg.get("mode", "given")
         self.lidar = mode != "given"
-        self.scan_source = None  # set by the Webots bridge: robot -> (free, hits, ends) from the 3D lidar
+        self.scan_source = None    # set by the Webots bridge: robot -> (free, hits, ends) from the 3D lidar
+        self.detect_source = None  # set by the Webots bridge: robot -> YOLO detections on map cells, or None
         map_file = os.path.join(ROOT, mcfg.get("file", "maps/supermarket.json"))
         manual = mcfg.get("manual_zones", [])
         if mode == "auto" and os.path.exists(map_file) and not remap:
@@ -136,7 +137,7 @@ class Simulation:
             "log": list(c.log)[-120:],
             "chat": list(c.chat),
             "backends": {"planner": c.planner.name, "asr": self.robots[0].asr.name,
-                         "detector": self.robots[0].detector.name},
+                         "detector": "yolo（Webots 鏡頭）" if self.detect_source else self.robots[0].detector.name},
             "held": sorted(c.held), "avoid": sorted(c.avoid_kinds), "thinking": len(c._plans),
             "map": c.map_view(),
             "stats": {**c.stats, "dirt_left": len(w.dirt), "dirt_known": len(c.known_dirt),

@@ -411,22 +411,31 @@ function setupMapMouse() {
   };
 }
 
+let mapStatusKey = "";
+
 function renderMapStatus(s) {
+  // Rebuilt only when its content changes, so a button in it isn't replaced under the mouse (polls
+  // arrive every 80 ms, and a click needs the same element for press and release).
   const el = document.getElementById("map-status");
   const m = s.map;
+  let cls = "map-status", html = "";
   if (m.phase === "exploring") {
     const pct = Math.min(100, Math.round((100 * m.free_m2) / (MAP.floor_cells * MAP.cell_m * MAP.cell_m)));
-    el.className = "map-status";
-    el.innerHTML = `<b>建圖中</b><span>${(m.elapsed_s / 60).toFixed(1)} 分鐘</span>` +
+    html = `<b>建圖中</b><span>${(m.elapsed_s / 60).toFixed(1)} 分鐘</span>` +
       `<span>已建出 <b>${m.free_m2}</b> m² 地面</span><span>探索邊界 <b>${m.frontiers.length}</b> 格</span>` +
       `<span class="bar" title="真實覆蓋率（只有模擬才知道）"><div style="width:${pct}%"></div></span><span>${pct}%</span>`;
-    el.hidden = false;
   } else if (labeling()) {
-    el.className = "map-status labeling";
-    el.innerHTML = `<b>地圖已建好</b><span>請在地圖上<b>拖曳框出</b>區域並命名，尚待標註：<b>${m.pending_zones.join("、")}</b></span>`;
-    el.hidden = false;
-  } else {
-    el.hidden = true;
+    cls = "map-status labeling";
+    html = `<b>地圖已建好</b><span>請在地圖上<b>拖曳框出</b>區域並命名，尚待標註：<b>${m.pending_zones.join("、")}</b></span>` +
+      `<button class="primary" id="btn-auto-zones" title="用預設範圍一次標好所有待標註區域（Demo 用）">一鍵標註</button>`;
+  }
+  if (cls + html !== mapStatusKey) {
+    mapStatusKey = cls + html;
+    el.className = cls;
+    el.innerHTML = html;
+    el.hidden = !html;
+    const auto = document.getElementById("btn-auto-zones");
+    if (auto) auto.onclick = () => { auto.disabled = true; api("/api/zone", { auto: true }); };
   }
   canvas.style.cursor = labeling() ? "crosshair" : "";
 }

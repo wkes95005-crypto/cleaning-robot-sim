@@ -23,11 +23,12 @@ from http.server import ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 from controller import Supervisor  # noqa: E402
-from layout import FRAMES_DIR, ROOT, OBSTACLE_LOOK, cell_to_xy, dirt_node, obstacle_node, parse_dirt_def  # noqa: E402
+from layout import FRAMES_DIR, ROOT, OBSTACLE_LOOK, cell_to_xy, dirt_node, obstacle_node, parse_dirt_def, xy_to_cell  # noqa: E402
 from run import load_config  # noqa: E402
 from sim.asr import exit_on_sigterm, start_service  # noqa: E402
 from sim.engine import Simulation  # noqa: E402
 from sim.mapping import scan_from_ranges  # noqa: E402
+from sim.perception import yolo_detections  # noqa: E402
 from sim.server import make_handler  # noqa: E402
 
 PORT = int(os.environ.get("CLEANSIM_PORT", "8781"))
@@ -60,12 +61,18 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 print(f"[fleet] console running, dashboard at http://127.0.0.1:{PORT}")
 
 # YOLO runs in its own Python environment (torch is too big for the Webots controller); start it if set up
+DETECT_FPS = 2  # camera frames per second per robot for the dirt detector
 yolo_py = os.path.join(ROOT, ".venv-yolo", "bin", "python")
 yolo = None
 if os.path.exists(yolo_py) and os.path.exists(os.path.join(ROOT, "weights", "dirt_yolov8n.pt")):
     yolo = subprocess.Popen([yolo_py, os.path.join(ROOT, "webots", "yolo_worker.py")],
                             env={**os.environ, "CLEANSIM_FRAMES": bridge.frames_dir})
     atexit.register(yolo.terminate)
+    # YOLO now drives dispatch: keep every robot's camera on at DETECT_FPS even when nobody watches
+    detect_flag = os.path.join(bridge.frames_dir, "_detect_fps")
+    with open(detect_flag, "w") as f:
+        f.write(str(DETECT_FPS))
+    atexit.register(lambda: os.path.exists(detect_flag) and os.remove(detect_flag))
     exit_on_sigterm()
     print("[fleet] YOLO dirt detector started")
 else:
@@ -91,6 +98,24 @@ def receive_scans():
         latest_scan[msg["id"]] = msg
         if debug_out:
             debug_out.write(json.dumps({"msg": msg, "poses": {k: v[-40:] for k, v in pose_log.items()}}) + "\n")
+
+
+used_frame = {}  # robot id -> camera frame whose detections were already reported
+
+
+def detect_source(robot):
+    """YOLO boxes on this robot's newest camera frame, put on the map with the pose the frame was taken
+    from. None when there is no new frame since last tick."""
+    path = os.path.join(bridge.frames_dir, f"{robot.id}.det.json")
+    try:
+        with open(path) as f:
+            det = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if det.get("frame") == used_frame.get(robot.id):
+        return None
+    used_frame[robot.id] = det.get("frame")
+    return yolo_detections(det, xy_to_cell)
 
 
 def scan_source(robot):
@@ -148,6 +173,7 @@ while sup.step(dt) != -1:
     with bridge.lock:
         sim = bridge.sim
         sim.scan_source = scan_source
+        sim.detect_source = detect_source if yolo else None
         if sim is not current:  # first run or dashboard reset
             current, last_tick = sim, t
             prev = {r.id: r.pos for r in sim.robots}

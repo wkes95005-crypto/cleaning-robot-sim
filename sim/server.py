@@ -156,6 +156,10 @@ def make_handler(runner):
                 with runner.lock:
                     rid, heard = runner.sim.hear(text, data.get("robot") or "S1")
                 return self._json({"ok": True, "robot": rid, "text": heard})
+            if self.path == "/api/zone" and data.get("auto"):
+                with runner.lock:
+                    names = runner.sim.console.label_pending_zones()
+                return self._json({"ok": True, "labelled": names})
             if self.path == "/api/zone":
                 with runner.lock:
                     ok, msg = runner.sim.console.label_zone(str(data.get("name", "")).strip(),

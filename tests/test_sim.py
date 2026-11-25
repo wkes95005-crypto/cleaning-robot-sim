@@ -282,3 +282,45 @@ class RealLidarTest(unittest.TestCase):
         x, y, yaw = args[0], args[1], args[2]
         free, hits, _ = scan_from_ranges(x, y, yaw, ranges, args[4], args[5], dynamic=lambda px, py: True)
         self.assertFalse(hits)  # every return was "on a robot": free space only
+
+
+class FalseAlarmTest(unittest.TestCase):
+    """Camera detections are not trusted blindly (YOLO in Webots reports some dirt that isn't there)."""
+
+    def test_close_look_withdraws_and_far_repeats_are_ignored(self):
+        sim = Simulation()
+        c = sim.console
+        cell = (30, 15)  # clean floor in the promo zone
+        c._on_dirt_detected("S1", cell, "wet", 0.62, False)
+        self.assertIn(cell, c.known_dirt)
+        c._on_no_dirt("M1", [cell])
+        self.assertNotIn(cell, c.known_dirt)
+        c._on_dirt_detected("S2", cell, "wet", 0.65, False)   # same false alarm from far away
+        self.assertNotIn(cell, c.known_dirt)
+        c._on_dirt_detected("S2", cell, "wet", 0.9, True)     # a close look still counts
+        self.assertIn(cell, c.known_dirt)
+
+    def test_detection_on_a_wall_is_dropped(self):
+        sim = Simulation()
+        sim.console._on_dirt_detected("S1", (3, 15), "dry", 0.8, False)  # (3, 15) is a shelf
+        self.assertNotIn((3, 15), sim.console.known_dirt)
+
+    def test_robot_reports_missing_dirt_next_to_it(self):
+        sim = Simulation()
+        r = sim.robot("S1")
+        ghost = (r.pos[0] + 1, r.pos[1] - 1)
+        sim.console.known_dirt[ghost] = {"label": "dry", "conf": 0.6}
+        run(sim, 3)
+        self.assertNotIn(ghost, sim.console.known_dirt)
+
+
+class AutoZoneTest(unittest.TestCase):
+    def test_one_click_labels_every_pending_zone(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            sim = Simulation({"mapping": {"mode": "explore", "file": f"{d}/m.json", "manual_zones": ["促銷區", "入口"]}})
+            while sim.console.phase == "exploring":
+                sim.step()
+            self.assertEqual(sim.console.label_pending_zones(), ["促銷區", "入口"])
+            self.assertEqual(sim.console.pending_zones, [])
+            self.assertEqual(sim.console.zone_of((44, 26)), "入口")

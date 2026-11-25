@@ -116,7 +116,17 @@ class Robot:
                                   movable=o.movable, stored=o.stored)
                 else:
                     self.local_blocked.discard(c)
-        for det in self.detector.detect(self.pos, in_view):
+        if self.sim.detect_source:  # Webots: YOLO on this robot's real camera frames
+            detections = self.sim.detect_source(self) or []
+        else:                       # 2D simulation: SimDetector reads the dirt in view
+            detections = self.detector.detect(self.pos, in_view)
+        # close look: the console believes there is dirt right next to me, but there is none (a false
+        # alarm from far away, or already gone) -> tell it, or it would keep sending robots here
+        absent = [c for c in [self.pos] + neighbors8(self.pos)
+                  if c in self.sim.console.known_dirt and c not in w.dirt]
+        if absent:
+            self.send("no_dirt", cells=absent)
+        for det in detections:
             if self.reported_dirt.get(det.cell) != det.label:
                 self.reported_dirt[det.cell] = det.label
                 self.send("dirt_detected", cell=det.cell, label=det.label,

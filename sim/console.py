@@ -20,6 +20,7 @@ from .world import CELL_M, DIRT_KINDS, OBSTACLE_KINDS, PATROL_ZONES, ZONES, cove
 LOW_BATTERY = 20     # send home to charge below this
 READY_BATTERY = 30   # don't hand out new work below this
 LOW_WATER = 10
+CHECKED_CLEAN_TICKS = 600  # after a close look found no dirt, ignore far-away reports there for 5 minutes
 EXPLORE_LIMIT = 2400  # ticks (20 minutes): stop exploring even if some frontier is never reached
 MODE_LABEL = {"sweep": "掃地", "mop": "拖地", "sweep_then_mop": "先掃後拖"}
 
@@ -112,6 +113,7 @@ class Console:
         self._milestone = 0
         self.frontier_cells = []
         self.manual_zones = []
+        self.checked_clean = {}     # cell -> tick until which far-away dirt reports there are ignored
         self._explore_logged = {}
 
     # ------------------------------------------------------------------ helpers
@@ -179,7 +181,13 @@ class Console:
             self.map.mark_free([tuple(st["pos"])])  # where a robot stands is floor
 
     def _on_scan(self, rid, free, hits):
-        self.map.update(map(tuple, free), map(tuple, hits))
+        hits = [tuple(h) for h in hits]
+        if self.phase != "exploring":
+            # The survey is done: the static map only opens up (a box moved away shows as floor again);
+            # new objects are the camera's job (no-go areas). Otherwise lidar noise at walls would keep
+            # punching grey holes into floor that the survey already settled.
+            hits = [h for h in hits if not self.map.is_free(h)]
+        self.map.update(map(tuple, free), hits)
 
     def _on_voice_text(self, rid, text, cell, zone):
         self.stats["commands"] += 1
@@ -196,6 +204,10 @@ class Console:
 
     def _on_dirt_detected(self, rid, cell, label, conf, near):
         cell = tuple(cell)
+        if self.map.is_occupied(cell):
+            return  # projected onto a wall or shelf: a bad placement, not dirt anyone can reach
+        if not near and self.tick < self.checked_clean.get(cell, -1):
+            return  # someone looked here up close and it was clean: don't chase far-away false alarms
         old = self.known_dirt.get(cell)
         if old and old["label"] == label:
             old["conf"] = max(old["conf"], conf)
@@ -208,6 +220,17 @@ class Console:
                                 f"{DIRT_KINDS[label]}（信心 {conf:.2f}）")
         else:
             self._log("vision", f"{rid} 偵測到{DIRT_KINDS[label]} @ {self._where(cell)}（信心 {conf:.2f}）")
+
+    def _on_no_dirt(self, rid, cells):
+        gone = [tuple(c) for c in cells if tuple(c) in self.known_dirt]
+        for c in gone:
+            self.checked_clean[c] = self.tick + CHECKED_CLEAN_TICKS
+        for c in gone:
+            self.known_dirt.pop(c)
+            for t in self.tasks.values():
+                t.cells.discard(c)
+        if gone:
+            self._log("vision", f"{rid} 近距離確認 {self._where(gone[0])} 等 {len(gone)} 格沒有髒污，撤銷先前的偵測")
 
     def _on_residue(self, rid, cells):
         for c in map(tuple, cells):
@@ -765,6 +788,9 @@ class Console:
                 t.status = "done"
                 if t.assignee:
                     self._send(t.assignee, "cancel", task=t.id)
+        filled = self.map.tidy()
+        if filled:
+            self._log("map", f"整理地圖：補上 {filled} 格光達雜訊留下的零星未知格")
         self.zones = {n: r for n, (r, _) in ZONES.items() if n not in self.manual_zones}
         self.pending_zones = list(self.manual_zones)
         self._zone_map = None
@@ -812,6 +838,13 @@ class Console:
                          + (f"；尚待標註：{'、'.join(self.pending_zones)}" if self.pending_zones else ""))
         self._save_map()
         return True, canonical
+
+    def label_pending_zones(self):
+        """Demo shortcut: label every zone still waiting for an operator with its standard rectangle."""
+        names = list(self.pending_zones)
+        for name in names:
+            self.label_zone(name, list(ZONES[name][0]))
+        return names
 
     def map_view(self):
         explored = len(self.map.free_cells()) * CELL_M * CELL_M

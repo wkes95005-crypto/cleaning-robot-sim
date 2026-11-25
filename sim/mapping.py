@@ -27,7 +27,10 @@ LIDAR_STEP_DEG = 3
 LIDAR_DROPOUT = 0.03      # share of rays that return nothing (dark or shiny surfaces)
 LIDAR_INVISIBLE = {"cable"}
 
-L_HIT, L_FREE, L_MIN, L_MAX = 0.9, -0.4, -2.5, 2.5   # log-odds update and clamp
+# Log-odds update and clamp. Floor saturates lower than walls: a cell that many beams have crossed
+# needs several hits in a row before it turns grey again, so a stray return grazing a wall can't punch
+# a black hole in the floor, while a box put down there still shows up within a couple of sweeps.
+L_HIT, L_FREE, L_MIN, L_MAX = 0.9, -0.4, -4.0, 2.5
 OCC, FREE = 0.6, -0.6                                 # thresholds for "wall" and "free"
 
 
@@ -139,6 +142,30 @@ class OccupancyMap:
             for x in range(W):
                 m.l[y][x] = L_MAX if (x, y) in world.walls else L_MIN
         return m
+
+    def tidy(self):
+        """Finish a survey: fill the isolated unknown cells that real lidar noise leaves behind.
+
+        An unknown cell with floor on at least three sides is floor; one on the outer edge of the map,
+        or boxed in by walls, is wall. Returns how many cells were filled."""
+        filled = 0
+        for _ in range(2):
+            for y in range(H):
+                for x in range(W):
+                    if abs(self.l[y][x]) >= OCC:
+                        continue
+                    around = [n for n in neighbors4((x, y)) if 0 <= n[0] < W and 0 <= n[1] < H]
+                    free = sum(self.is_free(n) for n in around)
+                    walls = sum(self.is_occupied(n) for n in around)
+                    if free >= 3:
+                        self.l[y][x] = L_MIN
+                    elif x in (0, W - 1) or y in (0, H - 1) or walls == len(around):
+                        self.l[y][x] = L_MAX
+                    else:
+                        continue
+                    filled += 1
+        self.version += 1
+        return filled
 
     # ------------------------------------------------------------------ frontiers
     def frontiers(self, min_unknown=3):

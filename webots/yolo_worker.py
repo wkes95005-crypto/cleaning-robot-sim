@@ -24,6 +24,21 @@ model = YOLO(WEIGHTS)
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 names = model.names
 seen = {}  # robot id -> mtime of the last frame processed
+
+
+def frame_pose(rid, mtime):
+    """The robot pose camera_feed saved with this frame (written right after the image), or None."""
+    path = os.path.join(FRAMES, f"{rid}.pose.json")
+    for _ in range(10):
+        try:
+            with open(path) as f:
+                p = json.load(f)
+            if p.get("frame") == mtime:
+                return p
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.005)
+    return None
 print(f"[yolo] {WEIGHTS} on {device}, watching {FRAMES}", flush=True)
 
 while True:
@@ -49,7 +64,7 @@ while True:
         boxes = [{"cls": names[int(c)], "conf": round(float(p), 2), "xyxy": [round(float(v), 1) for v in b]}
                  for b, c, p in zip(r.boxes.xyxy.tolist(), r.boxes.cls.tolist(), r.boxes.conf.tolist())]
         det = {"frame": mtime, "ms": round((time.perf_counter() - t0) * 1000, 1), "size": list(r.orig_shape[::-1]),
-               "boxes": boxes}
+               "boxes": boxes, "pose": frame_pose(rid, mtime)}
         tmp = os.path.join(FRAMES, f"{rid}.det.part")
         with open(tmp, "w") as out:
             json.dump(det, out)
