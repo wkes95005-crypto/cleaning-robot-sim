@@ -44,7 +44,7 @@ print(f"[yolo] {WEIGHTS} on {device}, watching {FRAMES}", flush=True)
 while True:
     busy = False
     for f in os.listdir(FRAMES) if os.path.isdir(FRAMES) else []:
-        if not f.endswith(".jpg") or ".part" in f:
+        if not f.endswith(".jpg") or ".part" in f or f.startswith("_"):  # _scene.jpg is the 3D view, not a robot
             continue
         rid, path = f[:-4], os.path.join(FRAMES, f)
         try:

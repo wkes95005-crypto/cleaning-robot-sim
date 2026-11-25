@@ -65,6 +65,11 @@
   </section>
 
   <section class="side-col">
+    <div class="panel" id="scene-panel" hidden>
+      <h2>3D 場景 <small id="scene-info">（Webots 視窗目前的視角，可在 Webots 裡拖曳旋轉、縮放）</small></h2>
+      <div class="scene-view"><img id="scene-img" alt=""></div>
+      <label class="cam-opt"><input type="checkbox" id="scene-on" checked> 顯示 3D 場景（約每秒 1 張）</label>
+    </div>
     <div class="panel" id="cam-panel" hidden>
       <h2>鏡頭畫面 <small id="cam-info"></small></h2>
       <div class="cam-main"><img id="cam-main" alt=""><canvas id="cam-boxes"></canvas><span class="cam-label" id="cam-label"></span><span class="cam-yolo" id="cam-yolo"></span></div>

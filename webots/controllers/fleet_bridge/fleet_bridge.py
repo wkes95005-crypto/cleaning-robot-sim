@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -165,11 +166,39 @@ def sync_scene(sim):
             root.getMFNode(i).remove()
 
 
+# The dashboard's 3D view: export what the Webots window shows, but only while someone is watching
+# (the dashboard touches _scene.want on every fetch). exportImage writes during the next step, so the
+# picture goes to a temporary file first and replaces _scene.jpg one loop later (no half-written JPEG).
+SCENE_PERIOD = 0.5  # seconds of wall time between pictures
+scene_want = os.path.join(bridge.frames_dir, "_scene.want")
+scene_tmp = os.path.join(bridge.frames_dir, "_scene.tmp.jpg")
+scene_jpg = os.path.join(bridge.frames_dir, "_scene.jpg")
+scene_pending, scene_last = False, 0.0
+
+
+def export_scene():
+    global scene_pending, scene_last
+    if scene_pending and os.path.exists(scene_tmp):
+        os.replace(scene_tmp, scene_jpg)
+        scene_pending = False
+    now = time.time()
+    if scene_pending or now - scene_last < SCENE_PERIOD:
+        return
+    try:
+        if now - os.path.getmtime(scene_want) > 3:
+            return  # nobody has asked for a while
+    except OSError:
+        return
+    sup.exportImage(scene_tmp, 80)
+    scene_pending, scene_last = True, now
+
+
 current, prev, heading, last_tick, last_sync = None, {}, {}, 0.0, 0.0
 next_snap = 2.0
 while sup.step(dt) != -1:
     t = sup.getTime()
     receive_scans()
+    export_scene()
     with bridge.lock:
         sim = bridge.sim
         sim.scan_source = scan_source

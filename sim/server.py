@@ -105,8 +105,29 @@ def make_handler(runner):
                 time.sleep(0.01)
             return {**det, "stale": True}
 
+        def _scene(self):
+            """Latest picture of the whole Webots 3D view. Asking for it keeps the export on."""
+            frames = getattr(runner, "frames_dir", None)
+            if not frames:
+                return self._json({"ok": False, "error": "no 3D view in this simulator"}, 404)
+            with open(os.path.join(frames, "_scene.want"), "w") as f:
+                f.write("1")
+            try:
+                with open(os.path.join(frames, "_scene.jpg"), "rb") as f:
+                    body = f.read()
+            except OSError:
+                return self._json({"ok": False, "error": "no frame yet"}, 404)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
             url = urlparse(self.path)
+            if url.path == "/api/scene.jpg":
+                return self._scene()
             cam = re.fullmatch(r"/api/camera/(\w+)\.jpg", url.path)
             if cam:
                 fps = float(parse_qs(url.query).get("fps", ["2"])[0])

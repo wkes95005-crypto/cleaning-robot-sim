@@ -71,6 +71,7 @@ async function init() {
     }
   });
   setupMic();
+  setupScene();
   setupCameras();
   selectRobot(MAP.fleet.find((r) => r.role === "sweeper").id, false);
 
@@ -154,6 +155,32 @@ function selectRobot(rid, focusInput = true) {
 // ------------------------------------------------------------------ cameras (Webots only)
 const MAIN_FPS = 5;
 const THUMB_FPS = 1;
+
+function setupScene() {
+  if (!MAP.cameras) return;
+  document.getElementById("scene-panel").hidden = false;
+  const img = document.getElementById("scene-img");
+  const on = document.getElementById("scene-on");
+  on.onchange = () => { img.parentElement.hidden = !on.checked; };
+  let url = null;
+  const tick = async () => {
+    if (on.checked && !document.hidden) {
+      try {
+        const r = await fetch("/api/scene.jpg", { cache: "no-store" });
+        if (!r.ok) throw new Error(r.status);
+        const next = URL.createObjectURL(await r.blob());
+        img.src = next;
+        if (url) URL.revokeObjectURL(url);
+        url = next;
+        img.classList.remove("nosignal");
+      } catch (e) {
+        img.classList.add("nosignal");
+      }
+    }
+    setTimeout(tick, 500);
+  };
+  tick();
+}
 
 function setupCameras() {
   if (!MAP.cameras) return;

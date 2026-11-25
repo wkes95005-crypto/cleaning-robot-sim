@@ -92,6 +92,9 @@ i.dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; ma
 
 .side-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.scene-view { background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 16 / 10; }
+.scene-view img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.scene-view img.nosignal { visibility: hidden; }
 .cam-main {
   position: relative; aspect-ratio: 4 / 3; background: #05080c; border-radius: 6px; overflow: hidden;
 }
