@@ -185,6 +185,24 @@ class MappingTest(unittest.TestCase):
             sim.step()
         return sim
 
+    def test_progress_is_boundary_closure_from_the_map_alone(self):
+        from sim.mapping import OccupancyMap
+        m = OccupancyMap()
+        self.assertEqual(m.closure(), 0.0)  # nothing known yet
+        for x in range(10, 14):  # a 4x4 floor patch, walled on the west, open everywhere else
+            for y in range(10, 14):
+                m.l[y][x] = -4.0
+        for y in range(10, 14):
+            m.l[y][9] = 2.5
+        self.assertAlmostEqual(m.closure(min_unknown=1), 4 / 16)
+        sim = Simulation(self.cfg)
+        seen = []
+        while sim.console.phase == "exploring" and sim.tick < 1000:
+            sim.step()
+            seen.append(sim.console.closure)
+        self.assertGreater(max(seen), 0.95)  # nearly closed when the last frontier goes
+        self.assertEqual(sim.console.map_view()["closure"], round(sim.console.closure, 3))
+
     def test_survey_maps_the_floor_and_saves_it(self):
         sim = self.survey()
         c, w = sim.console, sim.world

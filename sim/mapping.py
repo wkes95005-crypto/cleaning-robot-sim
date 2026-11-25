@@ -168,14 +168,10 @@ class OccupancyMap:
         return filled
 
     # ------------------------------------------------------------------ frontiers
-    def frontiers(self, min_unknown=3):
-        """Free cells next to unknown space, grouped 8-connected into clusters (largest first).
-
-        Unknown patches smaller than `min_unknown` cells don't count: with a real, noisy lidar a single
-        cell next to a wall now and then drifts back to "unknown", and chasing those would never end.
-        """
+    def _open_space(self, min_unknown):
+        """Unknown cells in patches of at least `min_unknown` cells: the space still worth exploring."""
         unknown = {(x, y) for y in range(H) for x in range(W) if abs(self.l[y][x]) < OCC}
-        open_space = set()  # unknown cells in patches big enough to be worth exploring
+        open_space = set()
         seen = set()
         for start in unknown:
             if start in seen:
@@ -190,6 +186,34 @@ class OccupancyMap:
                         todo.append(n)
             if len(patch) >= min_unknown:
                 open_space.update(patch)
+        return open_space
+
+    def closure(self, min_unknown=3):
+        """How closed the explored area is, 0..1, from the map alone (no knowledge of the store's size).
+
+        Walk the edge of the known floor: every side of a floor cell that faces a wall is closed, every
+        side that faces unexplored space is open. The survey is done when nothing is open (1.0). It can
+        drop for a while when a robot turns into a new aisle and the open edge grows."""
+        open_space = self._open_space(min_unknown)
+        closed = opened = 0
+        for y in range(H):
+            for x in range(W):
+                if self.l[y][x] > FREE:
+                    continue
+                for n in neighbors4((x, y)):
+                    if not (0 <= n[0] < W and 0 <= n[1] < H) or self.l[n[1]][n[0]] >= OCC:
+                        closed += 1
+                    elif n in open_space:
+                        opened += 1
+        return closed / (closed + opened) if closed + opened else 0.0
+
+    def frontiers(self, min_unknown=3):
+        """Free cells next to unknown space, grouped 8-connected into clusters (largest first).
+
+        Unknown patches smaller than `min_unknown` cells don't count: with a real, noisy lidar a single
+        cell next to a wall now and then drifts back to "unknown", and chasing those would never end.
+        """
+        open_space = self._open_space(min_unknown)
         cells = {(x, y) for y in range(H) for x in range(W)
                  if self.l[y][x] <= FREE and any(n in open_space for n in neighbors4((x, y)))}
         groups = []

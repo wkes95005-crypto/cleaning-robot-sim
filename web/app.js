@@ -420,10 +420,10 @@ function renderMapStatus(s) {
   const m = s.map;
   let cls = "map-status", html = "";
   if (m.phase === "exploring") {
-    const pct = Math.min(100, Math.round((100 * m.free_m2) / (MAP.floor_cells * MAP.cell_m * MAP.cell_m)));
+    const pct = Math.round(100 * (m.closure || 0));
     html = `<b>建圖中</b><span>${(m.elapsed_s / 60).toFixed(1)} 分鐘</span>` +
       `<span>已建出 <b>${m.free_m2}</b> m² 地面</span><span>探索邊界 <b>${m.frontiers.length}</b> 格</span>` +
-      `<span class="bar" title="真實覆蓋率（只有模擬才知道）"><div style="width:${pct}%"></div></span><span>${pct}%</span>`;
+      `<span class="bar" title="邊界封閉度：已知地面的外圍有多少已確定是牆（只用機器人自己建的地圖計算，不需知道賣場大小；轉進新走道時會暫時下降）"><div style="width:${pct}%"></div></span><span>邊界封閉 <b>${pct}%</b></span>`;
   } else if (labeling()) {
     cls = "map-status labeling";
     html = `<b>地圖已建好</b><span>請在地圖上<b>拖曳框出</b>區域並命名，尚待標註：<b>${m.pending_zones.join("、")}</b></span>` +

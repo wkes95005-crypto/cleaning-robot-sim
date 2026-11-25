@@ -111,6 +111,7 @@ class Console:
         self._explore_start = 0
         self._no_frontier = 0
         self._milestone = 0
+        self.closure = 0.0  # share of the known floor's edge that is wall (1.0 = nothing left to explore)
         self.frontier_cells = []
         self.manual_zones = []
         self.checked_clean = {}     # cell -> tick until which far-away dirt reports there are ignored
@@ -704,8 +705,10 @@ class Console:
         if self.tick % 2:
             return
         # a real lidar (Webots) is noisy: single cells by walls flicker to "unknown", so skip tiny patches
-        groups = self.map.frontiers(min_unknown=3 if self.sim.scan_source else 1)
+        min_unknown = 3 if self.sim.scan_source else 1
+        groups = self.map.frontiers(min_unknown=min_unknown)
         self.frontier_cells = [c for g in groups for c in g]
+        self.closure = self.map.closure(min_unknown=min_unknown)
         self._report_progress()
         targets = []  # (target cell, cluster size)
         for g in groups:
@@ -772,13 +775,13 @@ class Console:
         return f"{ew}{ns} {tuple(cell)}"
 
     def _report_progress(self):
-        floor = sum(1 for y in range(len(self.map.l)) for x in range(len(self.map.l[0]))
-                    if self.sim.world.is_floor((x, y)))
-        pct = int(100 * len(self.map.free_cells()) / max(1, floor))
+        """Log each 25% step of boundary closure: worked out from the robots' own map, since a real
+        fleet doesn't know how big the store is."""
+        pct = int(100 * self.closure)
         if pct >= self._milestone + 25:
             self._milestone = pct // 25 * 25
-            self._log("map", f"已建出 {len(self.map.free_cells()) * CELL_M * CELL_M:.0f} m² 地面"
-                             f"（約 {self._milestone}%），尚有 {len(self.frontier_cells)} 格未知邊界")
+            self._log("map", f"已建出 {len(self.map.free_cells()) * CELL_M * CELL_M:.0f} m² 地面，"
+                             f"邊界封閉度 {pct}%，尚有 {len(self.frontier_cells)} 格探索邊界")
 
     def _finish_mapping(self, complete=True):
         self.phase = "done"
@@ -851,5 +854,6 @@ class Console:
         return {"phase": self.phase, "occ": self.map.chars(), "frontiers": self.frontier_cells[:600],
                 "zones": [{"name": n, "rect": list(r)} for n, r in self.zones.items()],
                 "pending_zones": list(self.pending_zones), "free_m2": round(explored),
+                "closure": round(self.closure, 3),
                 "elapsed_s": (self.tick - self._explore_start) * 0.5 if self.phase == "exploring" else None,
                 "file": self.map_file}
